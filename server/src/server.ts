@@ -22,7 +22,7 @@ import {
   isXData,
 } from './extractor';
 import { parseXData, XDataMember } from './xdata';
-import { MAGIC_PROPERTIES, MODIFIERS, DIRECTIVES } from './data';
+import { MAGIC_PROPERTIES, MODIFIERS, DIRECTIVES, TRANSITION_SUBS } from './data';
 import { WorkspaceIndex, WorkspaceDef } from './workspace';
 
 export class AlpineLanguageServer {
@@ -191,6 +191,22 @@ export class AlpineLanguageServer {
             contents: [
               { language: 'plaintext', value: modInfo.name },
               `${modInfo.documentation} (for ${modInfo.for.join('/')})`,
+            ],
+          };
+        }
+      }
+      if (nameAttr.name.startsWith('x-transition:')) {
+        const colonIdx = nameAttr.name.indexOf(':');
+        let suffix = nameAttr.name.slice(colonIdx);
+        const dotInSuffix = suffix.indexOf('.');
+        if (dotInSuffix !== -1) suffix = suffix.slice(0, dotInSuffix);
+        const subAttr = TRANSITION_SUBS.find((s) => s.name === suffix);
+        if (subAttr) {
+          this.connection.console.info('onHover: transition sub-attribute ' + subAttr.name);
+          return {
+            contents: [
+              { language: 'plaintext', value: 'x-transition' + subAttr.name },
+              subAttr.documentation + '\n\nSee: x-transition',
             ],
           };
         }

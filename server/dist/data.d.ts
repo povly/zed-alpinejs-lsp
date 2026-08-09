@@ -11,6 +11,11 @@ export interface DirectiveInfo {
     example?: string;
 }
 export declare const DIRECTIVES: DirectiveInfo[];
+export interface TransitionSubAttr {
+    name: string;
+    documentation: string;
+}
+export declare const TRANSITION_SUBS: TransitionSubAttr[];
 export interface ModifierInfo {
     name: string;
     for: string[];

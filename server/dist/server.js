@@ -155,6 +155,23 @@ class AlpineLanguageServer {
                     };
                 }
             }
+            if (nameAttr.name.startsWith('x-transition:')) {
+                const colonIdx = nameAttr.name.indexOf(':');
+                let suffix = nameAttr.name.slice(colonIdx);
+                const dotInSuffix = suffix.indexOf('.');
+                if (dotInSuffix !== -1)
+                    suffix = suffix.slice(0, dotInSuffix);
+                const subAttr = data_1.TRANSITION_SUBS.find((s) => s.name === suffix);
+                if (subAttr) {
+                    this.connection.console.info('onHover: transition sub-attribute ' + subAttr.name);
+                    return {
+                        contents: [
+                            { language: 'plaintext', value: 'x-transition' + subAttr.name },
+                            subAttr.documentation + '\n\nSee: x-transition',
+                        ],
+                    };
+                }
+            }
             const base = (0, extractor_1.resolveDirectiveBase)(nameAttr.name);
             if (base) {
                 const directive = data_1.DIRECTIVES.find((d) => d.name === base);

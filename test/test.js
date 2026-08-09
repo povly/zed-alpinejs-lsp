@@ -11,6 +11,7 @@ const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDir
 const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
+const { DIRECTIVES, TRANSITION_SUBS } = require('../server/dist/data');
 const { createTestServer, loadDocument, DEBUG } = require('./helpers');
 
 const DEBUG_LOG = process.env.LOG_LEVEL === 'debug';
@@ -953,7 +954,7 @@ suite('AlpineLanguageServer.onHover', () => {
 // ── onCompletion: modifiers ─────────────────────────────────
 
 suite('onCompletion: modifiers', () => {
-  test('x-on:click.| returns all 8 x-on modifiers', () => {
+  test('x-on:click.| returns all 12 x-on modifiers', () => {
     const { server } = createTestServer();
     const html = '<button x-on:click.="">';
     const doc = loadDocument(server, 'file:///c.html', html);
@@ -971,7 +972,11 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.once'));
     assert.ok(labels.includes('.debounce'));
     assert.ok(labels.includes('.throttle'));
-    assert.strictEqual(labels.length, 8);
+    assert.ok(labels.includes('.self'));
+    assert.ok(labels.includes('.capture'));
+    assert.ok(labels.includes('.passive'));
+    assert.ok(labels.includes('.camel'));
+    assert.strictEqual(labels.length, 12);
     if (DEBUG_LOG) console.error(`[modifiers] x-on completion items=${items.length}`);
   });
 
@@ -988,7 +993,7 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.stop'), '.stop should be present for client-side filtering');
   });
 
-  test('x-model.| returns 4 x-model modifiers', () => {
+  test('x-model.| returns 7 x-model modifiers', () => {
     const { server } = createTestServer();
     const html = '<input x-model.="">';
     const doc = loadDocument(server, 'file:///c.html', html);
@@ -1002,7 +1007,25 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.number'));
     assert.ok(labels.includes('.debounce'));
     assert.ok(labels.includes('.throttle'));
-    assert.strictEqual(labels.length, 4);
+    assert.ok(labels.includes('.trim'));
+    assert.ok(labels.includes('.boolean'));
+    assert.ok(labels.includes('.fill'));
+    assert.strictEqual(labels.length, 7);
+  });
+
+  test('x-show.| returns 2 x-show modifiers', () => {
+    const { server } = createTestServer();
+    const html = '<div x-show.="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('.') + 1;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('.important'));
+    assert.ok(labels.includes('.immediate'));
+    assert.strictEqual(labels.length, 2);
   });
 
   test('cursor in VALUE region (x-on:click="test.|") does NOT return modifiers', () => {
@@ -1154,9 +1177,9 @@ suite('onHover: directives and modifiers', () => {
     assert.ok(sig.value.includes('open'), 'should show member signature');
   });
 
-  test('hover on x-transition:enter resolves base x-transition directive', () => {
+  test('hover on x-transition (no sub-attr) resolves base x-transition directive', () => {
     const { server } = createTestServer();
-    const html = '<template x-transition:enter="">';
+    const html = '<template x-transition="">';
     const doc = loadDocument(server, 'file:///h.html', html);
     const cursorOffset = html.indexOf('x-transition');
     const hover = server['onHover']({
@@ -1166,6 +1189,67 @@ suite('onHover: directives and modifiers', () => {
     assert.ok(hover);
     assert.strictEqual(hover.contents[0].value, 'x-transition');
     assert.ok(hover.contents[1].includes('Adds enter/leave CSS transitions.'));
+  });
+
+  test('hover on x-id name shows directive documentation', () => {
+    const { server } = createTestServer();
+    const html = '<div x-id="user">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-id');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.strictEqual(sig.language, 'plaintext');
+    assert.strictEqual(sig.value, 'x-id');
+    assert.ok(hover.contents[1].includes('Declares a scope for $id()'));
+  });
+
+  test('hover on .self modifier in x-on:click.self shows self doc', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click.self="fn()">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('self');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, '.self');
+    assert.ok(hover.contents[1].includes('event.target is the element itself'));
+    assert.ok(hover.contents[1].includes('(for x-on)'));
+  });
+
+  test('hover on .trim modifier in x-model.trim shows trim doc', () => {
+    const { server } = createTestServer();
+    const html = '<input x-model.trim="val">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('trim');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, '.trim');
+    assert.ok(hover.contents[1].includes('Trim whitespace from the input value.'));
+    assert.ok(hover.contents[1].includes('(for x-model)'));
+  });
+
+  test('hover on .important modifier in x-show.important shows important doc', () => {
+    const { server } = createTestServer();
+    const html = '<div x-show.important="open">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('important');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, '.important');
+    assert.ok(hover.contents[1].includes('display:none !important'));
+    assert.ok(hover.contents[1].includes('(for x-show)'));
   });
 });
 
@@ -1345,6 +1429,131 @@ suite('Integration: full pipeline', () => {
     assert.ok(result, 'helper should resolve via registration scope');
     const loc = Array.isArray(result) ? result[0] : result;
     assert.strictEqual(loc.uri, 'file:///lib.js');
+  });
+});
+
+// ── data: DIRECTIVES completeness ──────────────────────────
+
+suite('data: DIRECTIVES completeness', () => {
+  test('x-id entry exists with documentation and example', () => {
+    const entry = DIRECTIVES.find(d => d.name === 'x-id');
+    assert.ok(entry, 'x-id must exist in DIRECTIVES');
+    assert.ok(entry.documentation.length > 0);
+    assert.ok(entry.example && entry.example.length > 0);
+  });
+
+  test('all DIRECTIVES entries have non-empty documentation', () => {
+    for (const d of DIRECTIVES) {
+      assert.ok(d.documentation && d.documentation.length > 0,
+        `${d.name} must have non-empty documentation`);
+    }
+  });
+
+  test('at least 16 of DIRECTIVES entries have non-empty example', () => {
+    const withExample = DIRECTIVES.filter(d => d.example && d.example.length > 0);
+    assert.ok(withExample.length >= 16,
+      `expected >= 16 with example, got ${withExample.length}`);
+  });
+
+  test("resolveDirectiveBase('x-id') returns 'x-id'", () => {
+    assert.strictEqual(resolveDirectiveBase('x-id'), 'x-id');
+  });
+
+  test('hover on x-id in <div x-id="user"> shows documentation text', () => {
+    const { server } = createTestServer();
+    const html = '<div x-id="user">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const cursorOffset = html.indexOf('x-id') + 1;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///d.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-id');
+    assert.ok(hover.contents[1].includes('Declares a scope for $id()'));
+  });
+});
+
+// ── onHover: x-transition sub-attributes ───────────────────
+
+suite('onHover: x-transition sub-attributes', () => {
+  test('hover on x-transition:enter shows :enter sub-attr documentation', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition:enter="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('enter');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-transition:enter');
+    assert.ok(hover.contents[1].includes('CSS classes applied during the entire entering phase.'));
+    assert.ok(hover.contents[1].includes('See: x-transition'));
+  });
+
+  test('hover on x-transition:leave-start shows :leave-start sub-attr documentation', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition:leave-start="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('leave-start');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-transition:leave-start');
+    assert.ok(hover.contents[1].includes('Added immediately on leave trigger, removed after one frame.'));
+  });
+
+  test('hover on x-transition (no sub-attr) shows generic x-transition documentation', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-transition');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-transition');
+    assert.ok(hover.contents[1].includes('Adds enter/leave CSS transitions.'));
+  });
+
+  test('hover on x-transition:unknown falls through to generic x-transition hover (not null)', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition:unknown="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-transition');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover, 'must not be null — should fall through to generic x-transition');
+    assert.strictEqual(hover.contents[0].value, 'x-transition');
+    assert.ok(hover.contents[1].includes('Adds enter/leave CSS transitions.'));
+  });
+
+  test('TRANSITION_SUBS has 6 entries with non-empty documentation', () => {
+    assert.strictEqual(TRANSITION_SUBS.length, 6);
+    for (const s of TRANSITION_SUBS) {
+      assert.ok(s.name.startsWith(':'), `${s.name} should start with colon`);
+      assert.ok(s.documentation.length > 0, `${s.name} needs documentation`);
+    }
+  });
+
+  test('hover on x-transition:enter with modifier (.duration) still shows :enter doc', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition:enter.duration.500ms="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('enter');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-transition:enter');
+    assert.ok(hover.contents[1].includes('entering phase'));
   });
 });
 

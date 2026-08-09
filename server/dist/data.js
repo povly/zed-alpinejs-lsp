@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MODIFIERS = exports.DIRECTIVES = exports.MAGIC_PROPERTIES = void 0;
+exports.MODIFIERS = exports.TRANSITION_SUBS = exports.DIRECTIVES = exports.MAGIC_PROPERTIES = void 0;
 exports.MAGIC_PROPERTIES = [
     {
         name: '$el',
@@ -57,22 +57,31 @@ exports.MAGIC_PROPERTIES = [
 ];
 exports.DIRECTIVES = [
     { name: 'x-data', documentation: 'Declares a new Alpine component scope.', example: 'x-data="{ open: false }"' },
-    { name: 'x-init', documentation: 'Runs an expression when the component is initialized.' },
-    { name: 'x-show', documentation: 'Toggles `display:none` based on expression truthiness.' },
+    { name: 'x-init', documentation: 'Runs an expression when the component is initialized.', example: 'x-init="init()"' },
+    { name: 'x-show', documentation: 'Toggles `display:none` based on expression truthiness.', example: 'x-show="open"' },
     { name: 'x-bind', documentation: 'Binds an HTML attribute value to an expression.', example: ':class="{ active: isActive }"' },
     { name: 'x-on', documentation: 'Attaches an event listener.', example: '@click="toggle()"' },
-    { name: 'x-model', documentation: 'Two-way data binding for form inputs.' },
+    { name: 'x-model', documentation: 'Two-way data binding for form inputs.', example: 'x-model="name"' },
     { name: 'x-modelable', documentation: 'Exposes a piece of component state as the model for nested x-model.' },
-    { name: 'x-text', documentation: 'Sets the `innerText` of an element.' },
-    { name: 'x-html', documentation: 'Sets the `innerHTML` of an element.' },
-    { name: 'x-ref', documentation: 'Marks an element for retrieval via `$refs`.' },
-    { name: 'x-if', documentation: 'Conditionally renders a `<template>` block.' },
-    { name: 'x-for', documentation: 'Loops over an iterable in a `<template>` block.' },
-    { name: 'x-effect', documentation: 'Re-runs an expression whenever any reactive dependency changes.' },
-    { name: 'x-transition', documentation: 'Adds enter/leave CSS transitions.' },
-    { name: 'x-cloak', documentation: 'Hides an element until Alpine has initialized (pair with `[x-cloak] { display: none }`).' },
-    { name: 'x-teleport', documentation: 'Moves part of the template to another DOM location.' },
-    { name: 'x-ignore', documentation: 'Stops Alpine from initializing the element and its children.' },
+    { name: 'x-text', documentation: 'Sets the `innerText` of an element.', example: 'x-text="message"' },
+    { name: 'x-html', documentation: 'Sets the `innerHTML` of an element.', example: 'x-html="<strong>bold</strong>"' },
+    { name: 'x-ref', documentation: 'Marks an element for retrieval via `$refs`.', example: 'x-ref="button"' },
+    { name: 'x-if', documentation: 'Conditionally renders a `<template>` block.', example: 'x-if="show"' },
+    { name: 'x-for', documentation: 'Loops over an iterable in a `<template>` block.', example: 'x-for="item in items"' },
+    { name: 'x-effect', documentation: 'Re-runs an expression whenever any reactive dependency changes.', example: 'x-effect="update()"' },
+    { name: 'x-transition', documentation: 'Adds enter/leave CSS transitions.', example: 'x-show="open" x-transition' },
+    { name: 'x-cloak', documentation: 'Hides an element until Alpine has initialized (pair with `[x-cloak] { display: none }`).', example: 'x-cloak' },
+    { name: 'x-teleport', documentation: 'Moves part of the template to another DOM location.', example: 'x-teleport="#modal-container"' },
+    { name: 'x-ignore', documentation: 'Stops Alpine from initializing the element and its children.', example: 'x-ignore' },
+    { name: 'x-id', documentation: 'Declares a scope for $id() unique ID generation.', example: 'x-id="user"' },
+];
+exports.TRANSITION_SUBS = [
+    { name: ':enter', documentation: 'CSS classes applied during the entire entering phase.' },
+    { name: ':enter-start', documentation: 'Added before element is inserted, removed one animation frame after.' },
+    { name: ':enter-end', documentation: 'Added one frame after insertion, removed when transition finishes.' },
+    { name: ':leave', documentation: 'CSS classes applied during the entire leaving phase.' },
+    { name: ':leave-start', documentation: 'Added immediately on leave trigger, removed after one frame.' },
+    { name: ':leave-end', documentation: 'Added one frame after leave trigger, removed when transition finishes.' },
 ];
 exports.MODIFIERS = [
     { name: '.stop', for: ['x-on'], documentation: 'Equivalent to `event.stopPropagation()`.' },
@@ -85,5 +94,14 @@ exports.MODIFIERS = [
     { name: '.throttle', for: ['x-on', 'x-model'], documentation: 'Throttle the event handler.' },
     { name: '.lazy', for: ['x-model'], documentation: 'Only sync on `change` event (not `input`).' },
     { name: '.number', for: ['x-model'], documentation: 'Coerce the input value to a number.' },
+    { name: '.self', for: ['x-on'], documentation: 'Only trigger if event.target is the element itself (not a child).' },
+    { name: '.capture', for: ['x-on'], documentation: 'Listen during capture phase (before bubbling).' },
+    { name: '.passive', for: ['x-on'], documentation: 'Mark listener as passive for performance (cannot call preventDefault).' },
+    { name: '.camel', for: ['x-on'], documentation: 'Convert event name from kebab-case to camelCase (e.g. custom-event → customEvent).' },
+    { name: '.trim', for: ['x-model'], documentation: 'Trim whitespace from the input value.' },
+    { name: '.boolean', for: ['x-model'], documentation: 'Coerce value to a JS boolean (accepts true/false/1/0).' },
+    { name: '.fill', for: ['x-model'], documentation: "Populate empty bound property from element's value attribute." },
+    { name: '.important', for: ['x-show'], documentation: 'Set display:none !important instead of display:none.' },
+    { name: '.immediate', for: ['x-show'], documentation: 'Show/hide immediately without transition animation.' },
 ];
 //# sourceMappingURL=data.js.map
