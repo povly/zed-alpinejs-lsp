@@ -7,7 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces } = require('../server/dist/extractor');
+const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData } = require('../server/dist/extractor');
 const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
@@ -1785,6 +1785,243 @@ suite('workspace: indexDocument with precomputed attrs', () => {
 
 // ── Summary ─────────────────────────────────────────────────
 
+// ── workspace: scanWorkspace logging ────────────────────────
+
+suite('workspace: scanWorkspace logging', () => {
+  test('scanWorkspace without logger is backward compatible and returns metrics', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alpine-silent-'));
+    try {
+      fs.writeFileSync(path.join(tmp, 'app.js'), "Alpine.data('x', () => ({ a: 1 }))");
+      const ws = new WorkspaceIndex();
+      const metrics = ws.scanWorkspace(tmp);
+      assert.ok(typeof metrics.durationMs === 'number', 'durationMs must be a number');
+      assert.ok(typeof metrics.fileCount === 'number', 'fileCount must be a number');
+      assert.ok(typeof metrics.skippedCount === 'number', 'skippedCount must be a number');
+      assert.ok(metrics.durationMs >= 0, 'durationMs must be non-negative');
+      assert.strictEqual(metrics.fileCount, 1, 'one file scanned');
+      assert.strictEqual(metrics.skippedCount, 0, 'nothing skipped');
+      assert.ok(ws.allDataNames().includes('x'), 'registration indexed');
+    } finally {
+      fs.rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test('logger NOT called when scanning valid directory', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alpine-clean-'));
+    try {
+      fs.writeFileSync(path.join(tmp, 'a.js'), "Alpine.data('a', () => ({}))");
+      fs.writeFileSync(path.join(tmp, 'b.html'), '<div x-data="{ open: false }">');
+      const logs = [];
+      const logger = (level, msg) => logs.push({ level, msg });
+      const ws = new WorkspaceIndex();
+      const metrics = ws.scanWorkspace(tmp, logger);
+      assert.strictEqual(logs.length, 0, 'no warnings on valid scan');
+      assert.ok(metrics.fileCount >= 2, 'at least 2 files indexed');
+      assert.strictEqual(metrics.skippedCount, 0, 'nothing skipped');
+    } finally {
+      fs.rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test('logger emits warn with directory name for nonexistent path', () => {
+    const bogus = path.join(os.tmpdir(), 'alpine-does-not-exist-' + process.pid);
+    const logs = [];
+    const logger = (level, msg) => logs.push({ level, msg });
+    const ws = new WorkspaceIndex();
+    const metrics = ws.scanWorkspace(bogus, logger);
+    assert.ok(logs.length >= 1, 'at least one warn emitted');
+    const warn = logs.find((l) => l.level === 'warn');
+    assert.ok(warn, 'a warn-level entry must exist');
+    assert.ok(warn.msg.includes(bogus), 'warn message must mention the directory path');
+    assert.ok(warn.msg.includes('cannot read directory'), 'warn message must identify the failure kind');
+    assert.strictEqual(metrics.fileCount, 0, 'no files scanned');
+    assert.ok(metrics.skippedCount >= 1, 'at least one skip recorded');
+  });
+
+  test('logger emits warn with file path when readFileSync throws', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alpine-rfail-'));
+    try {
+      const targetPath = path.join(tmp, 'forced-fail.js');
+      fs.writeFileSync(targetPath, "Alpine.data('ok', () => ({}))");
+      const origRead = fs.readFileSync;
+      fs.readFileSync = function (p, opts) {
+        if (typeof p === 'string' && p === targetPath) {
+          throw new Error('synthetic read failure');
+        }
+        return origRead.apply(this, arguments);
+      };
+      try {
+        const logs = [];
+        const logger = (level, msg) => logs.push({ level, msg });
+        const ws = new WorkspaceIndex();
+        const metrics = ws.scanWorkspace(tmp, logger);
+        const warn = logs.find((l) => l.level === 'warn' && l.msg.includes(targetPath));
+        assert.ok(warn, 'a warn mentioning the failing file path must be logged');
+        assert.ok(warn.msg.includes('cannot read file'), 'warn must identify the failure kind');
+        assert.ok(metrics.skippedCount >= 1, 'skipped count incremented');
+        assert.strictEqual(metrics.fileCount, 0, 'failed file must NOT be counted as scanned');
+      } finally {
+        fs.readFileSync = origRead;
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true });
+    }
+  });
+});
+
+// ── server: error logging context ───────────────────────────
+
+function createCapturingServer() {
+  const { server, handlers } = createTestServer();
+  const captured = { info: [], warn: [], error: [] };
+  server['connection'].console.info = (m) => captured.info.push(m);
+  server['connection'].console.warn = (m) => captured.warn.push(m);
+  server['connection'].console.error = (m) => captured.error.push(m);
+  return { server, handlers, captured };
+}
+
+suite('server: error logging context', () => {
+  test('Parse error catch includes URI in error message', () => {
+    const orig = require('../server/dist/extractor').extractAlpineAttrs;
+    const extractorModule = require('../server/dist/extractor');
+    const { server, captured } = createCapturingServer();
+    try {
+      extractorModule.extractAlpineAttrs = () => {
+        throw new Error('forced parse failure');
+      };
+      const uri = 'file:///parse-err.html';
+      fireDidChangeContent(server, uri, '<div x-data="{ open: false }">');
+      const parseErr = captured.error.find((m) => m.includes('Parse error'));
+      assert.ok(parseErr, 'Parse error must be logged');
+      assert.ok(parseErr.includes(uri), 'Parse error log must include the URI');
+      assert.ok(parseErr.includes('forced parse failure'), 'Parse error log must include the cause');
+      if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+    } finally {
+      extractorModule.extractAlpineAttrs = orig;
+    }
+  });
+
+  testAsync('Index error catch (debounced) includes URI in error message', async () => {
+    const { server, captured } = createCapturingServer();
+    const ws = server['workspace'];
+    const origIndex = ws.indexDocument.bind(ws);
+    ws.indexDocument = function () {
+      throw new Error('forced index failure');
+    };
+    try {
+      const uri = 'file:///index-err.html';
+      fireDidChangeContent(server, uri, '<div x-data="{ open: false }">');
+      await sleep(350);
+      const indexErr = captured.error.find((m) => m.includes('Index error'));
+      assert.ok(indexErr, 'Index error must be logged after debounce fires');
+      assert.ok(indexErr.includes(uri), 'Index error log must include the URI');
+      assert.ok(indexErr.includes('forced index failure'), 'Index error log must include the cause');
+    } finally {
+      ws.indexDocument = origIndex;
+      if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+    }
+  });
+
+  test('scanWorkspace warns forward to connection.console.warn via logger callback', () => {
+    const { server, handlers, captured } = createCapturingServer();
+    const bogus = path.join(os.tmpdir(), 'alpine-server-nowhere-' + process.pid);
+    handlers.onInitialize({ rootUri: 'file://' + bogus });
+    const scanWarn = captured.warn.find((m) => m.includes(bogus));
+    assert.ok(scanWarn, 'scanWorkspace warn must be forwarded to connection.console.warn');
+    assert.ok(scanWarn.includes('cannot read directory'), 'forwarded warn must identify failure kind');
+  });
+
+  test('Workspace scan failed catch includes rootPath in error message', () => {
+    const { server, handlers, captured } = createCapturingServer();
+    const ws = server['workspace'];
+    const origScan = ws.scanWorkspace.bind(ws);
+    ws.scanWorkspace = function () {
+      throw new Error('forced scan failure');
+    };
+    try {
+      const rootPath = '/forced/scan/path';
+      handlers.onInitialize({ rootUri: 'file://' + rootPath });
+      const scanErr = captured.error.find((m) => m.includes('Workspace scan failed'));
+      assert.ok(scanErr, 'Workspace scan failed must be logged');
+      assert.ok(scanErr.includes(rootPath), 'scan failed log must include rootPath');
+      assert.ok(scanErr.includes('forced scan failure'), 'scan failed log must include the cause');
+    } finally {
+      ws.scanWorkspace = origScan;
+    }
+  });
+});
+
+// ── server: performance metrics ─────────────────────────────
+
+suite('server: performance metrics', () => {
+  test('onInitialize logs scan metrics line (files, skipped, ms)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alpine-perf-'));
+    try {
+      fs.writeFileSync(path.join(tmp, 'a.js'), "Alpine.data('x', () => ({ a: 1 }))");
+      fs.writeFileSync(path.join(tmp, 'b.html'), '<div x-data="{ open: false }">');
+      const { server, handlers, captured } = createCapturingServer();
+      handlers.onInitialize({ rootUri: 'file://' + tmp });
+      const metricsLine = captured.info.find(
+        (m) => m.startsWith('Workspace scan:') && m.includes('files'),
+      );
+      assert.ok(metricsLine, 'metrics log line must be present');
+      assert.ok(metricsLine.includes('skipped'), 'metrics must mention skipped');
+      assert.ok(/\d+ms/.test(metricsLine), 'metrics must contain <N>ms token');
+    } finally {
+      fs.rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test('metrics durationMs is a positive number reflecting real elapsed time', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alpine-perf2-'));
+    try {
+      fs.writeFileSync(path.join(tmp, 'a.js'), "Alpine.store('s', { x: 1 })");
+      const ws = new WorkspaceIndex();
+      const metrics = ws.scanWorkspace(tmp);
+      assert.ok(metrics.durationMs >= 0, 'durationMs non-negative');
+      assert.ok(metrics.durationMs < 5000, 'durationMs sanity bound (<5s)');
+      assert.ok(metrics.fileCount >= 1, 'at least one file counted');
+    } finally {
+      fs.rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test('debounced indexDocument under 50ms does not emit timing log', async () => {
+    const { server, captured } = createCapturingServer();
+    fireDidChangeContent(server, 'file:///perf-fast.html', '<div x-data="{ open: false }">');
+    await sleep(350);
+    const timingLine = captured.info.find((m) => /indexed ".*" in \d+ms/.test(m));
+    assert.strictEqual(timingLine, undefined,
+      'no per-document timing line emitted for fast (<50ms) indexing');
+    const debouncedLine = captured.info.find((m) => m.includes('workspace indexed (debounced)'));
+    assert.ok(debouncedLine, 'the regular debounced log line must still be emitted for fast path');
+  });
+
+  test('debounced indexDocument over 50ms emits timing log with URI', async () => {
+    const { server, captured } = createCapturingServer();
+    const ws = server['workspace'];
+    const origIndex = ws.indexDocument.bind(ws);
+    ws.indexDocument = function (uri, text, attrs) {
+      const start = Date.now();
+      while (Date.now() - start < 70) { /* spin ~70ms to exceed the 50ms threshold */ }
+      return origIndex(uri, text, attrs);
+    };
+    try {
+      const uri = 'file:///perf-slow.html';
+      fireDidChangeContent(server, uri, '<div x-data="{ open: false }">');
+      await sleep(400);
+      const timingLine = captured.info.find((m) => /indexed ".*" in \d+ms/.test(m));
+      assert.ok(timingLine, 'timing log must be emitted when indexDocument takes >50ms');
+      assert.ok(timingLine.includes(uri), 'timing log must include the URI');
+    } finally {
+      ws.indexDocument = origIndex;
+      if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+    }
+  });
+});
+
+// ── Summary (final) ─────────────────────────────────────────
+
 async function runAsync() {
   for (const t of asyncTests) {
     try {
@@ -1798,6 +2035,59 @@ async function runAsync() {
     }
   }
 }
+
+// ── extractAlpineData: default parameter edge cases ─────────────
+
+suite('extractAlpineData: default param in object literal', () => {
+  test('Alpine.data with default param { items: [] } skips param brace', () => {
+    const js = `Alpine.data('cart', (initial = { items: [] }) => ({
+      items: initial.items ?? [],
+      hasItem(id) { return true; },
+      remove(id) { this.items = []; },
+    }));`;
+    const regs = extractAlpineData(js);
+    assert.strictEqual(regs.length, 1);
+    assert.strictEqual(regs[0].registrationName, 'cart');
+    assert.ok(regs[0].objectLiteral.includes('hasItem'), 'objectLiteral must contain hasItem');
+    assert.ok(regs[0].objectLiteral.includes('remove'), 'objectLiteral must contain remove');
+    assert.ok(!regs[0].objectLiteral.trim().startsWith('items: []'), 'must not capture default param');
+  });
+
+  test('Alpine.data without params still works', () => {
+    const js = `Alpine.data('blog', () => ({
+      visibleCount: 6,
+      showMore() {},
+    }));`;
+    const regs = extractAlpineData(js);
+    assert.strictEqual(regs.length, 1);
+    assert.strictEqual(regs[0].registrationName, 'blog');
+    assert.ok(regs[0].objectLiteral.includes('visibleCount'));
+    assert.ok(regs[0].objectLiteral.includes('showMore'));
+  });
+
+  test('Alpine.data with simple param (no default object)', () => {
+    const js = `Alpine.data('filters', (data = {}) => ({
+      open: false,
+      toggle() {},
+    }));`;
+    const regs = extractAlpineData(js);
+    assert.strictEqual(regs.length, 1);
+    assert.ok(regs[0].objectLiteral.includes('toggle'));
+  });
+
+  test('resolveScope strips parentheses from registration name', () => {
+    const ws = new WorkspaceIndex();
+    const js = `Alpine.data('blog', () => ({
+      visibleCount: 6,
+      showMore() {},
+    }));`;
+    const regs = extractAlpineData(js);
+    ws.indexDocument('file:///blog.js', js);
+    const scope = ws.resolveScope('blog()', 'file:///blog.js');
+    assert.ok(scope, 'resolveScope must find scope for "blog()"');
+    assert.ok(scope.members.some(m => m.name === 'showMore'), 'members must include showMore');
+  });
+});
 
 async function main() {
   if (asyncTests.length > 0) {

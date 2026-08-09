@@ -155,6 +155,7 @@ function matchBraces(text, openBraceOffset) {
  */
 function findObjectBraceStart(text, from) {
     let parenDepth = 0;
+    let braceDepth = 0;
     let inString = false;
     let stringChar = '';
     for (let i = from; i < text.length; i++) {
@@ -178,8 +179,16 @@ function findObjectBraceStart(text, from) {
         else if (ch === ')' || ch === ']') {
             parenDepth--;
         }
-        else if (ch === '{' && parenDepth <= 1) {
-            return i;
+        else if (ch === '{') {
+            if (parenDepth <= 0 && braceDepth === 0)
+                return i;
+            // Allow the ({ pattern: arrow function returning object literal
+            if (parenDepth === 1 && braceDepth === 0 && text[i - 1] === '(')
+                return i;
+            braceDepth++;
+        }
+        else if (ch === '}') {
+            braceDepth--;
         }
     }
     return -1;

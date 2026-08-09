@@ -106,20 +106,24 @@ class WorkspaceIndex {
         const trimmed = xdataValue.trim();
         if (trimmed.startsWith('{'))
             return null;
-        const dataRegs = this.lookupAlpineData(trimmed);
+        // Strip trailing parentheses and arguments: 'blog()' → 'blog', 'cart(123)' → 'cart'
+        const name = trimmed.replace(/\(.*$/, '').trim();
+        if (!name)
+            return null;
+        const dataRegs = this.lookupAlpineData(name);
         if (dataRegs.length > 0) {
             const reg = dataRegs[0];
             return {
                 members: this.getRegistrationMembers(reg.def, reg.text),
-                sourceLabel: `${reg.def.registrationKind}('${trimmed}') — ${reg.def.sourceFile}`,
+                sourceLabel: `${reg.def.registrationKind}('${name}') — ${reg.def.sourceFile}`,
             };
         }
-        const storeRegs = this.lookupAlpineStore(trimmed);
+        const storeRegs = this.lookupAlpineStore(name);
         if (storeRegs.length > 0) {
             const reg = storeRegs[0];
             return {
                 members: this.getRegistrationMembers(reg.def, reg.text),
-                sourceLabel: `${reg.def.registrationKind}('${trimmed}') — ${reg.def.sourceFile}`,
+                sourceLabel: `${reg.def.registrationKind}('${name}') — ${reg.def.sourceFile}`,
             };
         }
         return null;
@@ -141,7 +145,10 @@ class WorkspaceIndex {
             return null;
         return offsetToLineChar(text, def.startOffset + def.length);
     }
-    scanWorkspace(rootPath) {
+    scanWorkspace(rootPath, logger) {
+        const t0 = performance.now();
+        let fileCount = 0;
+        let skippedCount = 0;
         const walk = (dir, depth) => {
             if (depth > 10)
                 return;
@@ -149,7 +156,9 @@ class WorkspaceIndex {
             try {
                 entries = fs.readdirSync(dir, { withFileTypes: true });
             }
-            catch {
+            catch (e) {
+                logger?.('warn', `scanWorkspace: cannot read directory "${dir}": ${e}`);
+                skippedCount++;
                 return;
             }
             for (const entry of entries) {
@@ -170,13 +179,18 @@ class WorkspaceIndex {
                         const content = fs.readFileSync(fullPath, 'utf-8');
                         this.fileTexts.set(uri, content);
                         this.fileDefs.set(uri, this.extractDefinitions(uri, content));
+                        fileCount++;
                     }
-                    catch { /* skip */ }
+                    catch (e) {
+                        logger?.('warn', `scanWorkspace: cannot read file "${fullPath}": ${e}`);
+                        skippedCount++;
+                    }
                 }
             }
         };
         walk(rootPath, 0);
         this.rebuildIndexes();
+        return { durationMs: performance.now() - t0, fileCount, skippedCount };
     }
     extractDefinitions(uri, text, precomputedAttrs) {
         const defs = [];

@@ -20,6 +20,16 @@ export interface ResolvedScope {
   sourceLabel: string;
 }
 
+/** Logger callback injected into WorkspaceIndex to keep it dependency-free. */
+export type LoggerFn = (level: 'warn' | 'info', msg: string) => void;
+
+/** Metrics returned by scanWorkspace for observability. */
+export interface ScanMetrics {
+  durationMs: number;
+  fileCount: number;
+  skippedCount: number;
+}
+
 const SCAN_EXTENSIONS = ['.js', '.ts', '.jsx', '.tsx', '.html', '.blade.php', '.php'];
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'vendor', 'dist', 'build',
@@ -99,21 +109,25 @@ export class WorkspaceIndex {
 
     if (trimmed.startsWith('{')) return null;
 
-    const dataRegs = this.lookupAlpineData(trimmed);
+    // Strip trailing parentheses and arguments: 'blog()' → 'blog', 'cart(123)' → 'cart'
+    const name = trimmed.replace(/\(.*$/, '').trim();
+    if (!name) return null;
+
+    const dataRegs = this.lookupAlpineData(name);
     if (dataRegs.length > 0) {
       const reg = dataRegs[0];
       return {
         members: this.getRegistrationMembers(reg.def, reg.text),
-        sourceLabel: `${reg.def.registrationKind}('${trimmed}') — ${reg.def.sourceFile}`,
+        sourceLabel: `${reg.def.registrationKind}('${name}') — ${reg.def.sourceFile}`,
       };
     }
 
-    const storeRegs = this.lookupAlpineStore(trimmed);
+    const storeRegs = this.lookupAlpineStore(name);
     if (storeRegs.length > 0) {
       const reg = storeRegs[0];
       return {
         members: this.getRegistrationMembers(reg.def, reg.text),
-        sourceLabel: `${reg.def.registrationKind}('${trimmed}') — ${reg.def.sourceFile}`,
+        sourceLabel: `${reg.def.registrationKind}('${name}') — ${reg.def.sourceFile}`,
       };
     }
 
@@ -140,13 +154,21 @@ export class WorkspaceIndex {
     return offsetToLineChar(text, def.startOffset + def.length);
   }
 
-  scanWorkspace(rootPath: string): void {
+  scanWorkspace(rootPath: string, logger?: LoggerFn): ScanMetrics {
+    const t0 = performance.now();
+    let fileCount = 0;
+    let skippedCount = 0;
+
     const walk = (dir: string, depth: number) => {
       if (depth > 10) return;
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch { return; }
+      } catch (e) {
+        logger?.('warn', `scanWorkspace: cannot read directory "${dir}": ${e}`);
+        skippedCount++;
+        return;
+      }
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
@@ -165,13 +187,18 @@ export class WorkspaceIndex {
             const content = fs.readFileSync(fullPath, 'utf-8');
             this.fileTexts.set(uri, content);
             this.fileDefs.set(uri, this.extractDefinitions(uri, content));
-          } catch { /* skip */ }
+            fileCount++;
+          } catch (e) {
+            logger?.('warn', `scanWorkspace: cannot read file "${fullPath}": ${e}`);
+            skippedCount++;
+          }
         }
       }
     };
 
     walk(rootPath, 0);
     this.rebuildIndexes();
+    return { durationMs: performance.now() - t0, fileCount, skippedCount };
   }
 
   private extractDefinitions(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): WorkspaceDef[] {

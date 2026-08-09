@@ -14,6 +14,14 @@ export interface ResolvedScope {
     members: WorkspaceDef[];
     sourceLabel: string;
 }
+/** Logger callback injected into WorkspaceIndex to keep it dependency-free. */
+export type LoggerFn = (level: 'warn' | 'info', msg: string) => void;
+/** Metrics returned by scanWorkspace for observability. */
+export interface ScanMetrics {
+    durationMs: number;
+    fileCount: number;
+    skippedCount: number;
+}
 export declare class WorkspaceIndex {
     private fileDefs;
     private fileTexts;
@@ -45,7 +53,7 @@ export declare class WorkspaceIndex {
         line: number;
         character: number;
     } | null;
-    scanWorkspace(rootPath: string): void;
+    scanWorkspace(rootPath: string, logger?: LoggerFn): ScanMetrics;
     private extractDefinitions;
     private makeDef;
     /**

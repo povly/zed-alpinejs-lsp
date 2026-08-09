@@ -23,7 +23,7 @@ import {
 } from './extractor';
 import { parseXData, XDataMember } from './xdata';
 import { MAGIC_PROPERTIES, MODIFIERS, DIRECTIVES, TRANSITION_SUBS } from './data';
-import { WorkspaceIndex, WorkspaceDef } from './workspace';
+import { WorkspaceIndex, WorkspaceDef, LoggerFn } from './workspace';
 
 export class AlpineLanguageServer {
   private documents = new TextDocuments(TextDocument);
@@ -35,10 +35,10 @@ export class AlpineLanguageServer {
     this.documents.listen(connection);
 
     this.documents.onDidChangeContent(({ document }) => {
+      const uri = document.uri;
       try {
         // Eager: attrCache updates immediately for instant completion/hover.
         const text = document.getText();
-        const uri = document.uri;
         const attrs = extractAlpineAttrs(text);
         this.attrCache.set(uri, attrs);
 
@@ -46,18 +46,26 @@ export class AlpineLanguageServer {
         // into a single incremental rebuild per URI.
         if (this.indexDebounceTimer) clearTimeout(this.indexDebounceTimer);
         this.indexDebounceTimer = setTimeout(() => {
+          const t0 = performance.now();
           try {
             const cachedAttrs = this.attrCache.get(uri);
             this.workspace.indexDocument(uri, text, cachedAttrs ?? undefined);
-            this.connection.console.info(
-              `onDidChangeContent: workspace indexed (debounced) for ${uri}`,
-            );
+            const elapsed = performance.now() - t0;
+            if (elapsed > 50) {
+              this.connection.console.info(
+                `onDidChangeContent: indexed "${uri}" in ${elapsed.toFixed(0)}ms`,
+              );
+            } else {
+              this.connection.console.info(
+                `onDidChangeContent: workspace indexed (debounced) for ${uri}`,
+              );
+            }
           } catch (e) {
-            this.connection.console.error(`Index error: ${e}`);
+            this.connection.console.error(`Index error for "${uri}": ${e}`);
           }
         }, 300);
       } catch (e) {
-        this.connection.console.error(`Parse error: ${e}`);
+        this.connection.console.error(`Parse error for "${uri}": ${e}`);
       }
     });
 
@@ -71,15 +79,21 @@ export class AlpineLanguageServer {
         const rootPath = rootUri.replace(/^file:\/\//, '');
         this.connection.console.info(`Scanning workspace: ${rootPath}`);
         try {
-          this.workspace.scanWorkspace(rootPath);
+          const logger: LoggerFn = (level, msg) => {
+            this.connection.console[level](msg);
+          };
+          const metrics = this.workspace.scanWorkspace(rootPath, logger);
           const count = this.workspace.allNames().length;
           const dataCount = this.workspace.allDataNames().length;
           const storeCount = this.workspace.allStoreNames().length;
           this.connection.console.info(
             `Workspace indexed: ${count} symbols (${dataCount} Alpine.data, ${storeCount} Alpine.store)`,
           );
+          this.connection.console.info(
+            `Workspace scan: ${metrics.fileCount} files, ${metrics.skippedCount} skipped, ${metrics.durationMs.toFixed(0)}ms`,
+          );
         } catch (e) {
-          this.connection.console.error(`Workspace scan failed: ${e}`);
+          this.connection.console.error(`Workspace scan failed for "${rootPath}": ${e}`);
         }
       }
 
@@ -375,7 +389,10 @@ export class AlpineLanguageServer {
     return best;
   }
 
-  private hoverRegistrationName(name: string): Hover | null {
+  private hoverRegistrationName(rawName: string): Hover | null {
+    const name = rawName.replace(/\(.*$/, '').trim();
+    if (!name) return null;
+
     const dataRegs = this.workspace.lookupAlpineData(name);
     if (dataRegs.length > 0) {
       const reg = dataRegs[0];
