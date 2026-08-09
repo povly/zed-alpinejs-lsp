@@ -1,0 +1,4 @@
+name = "HTML (Alpine)"
+grammar = "html"
+path_suffixes = ["html", "htm"]
+completion_query_characters = ["-", ":", "@", "$"]

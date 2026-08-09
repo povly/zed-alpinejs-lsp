@@ -2,6 +2,7 @@ target/
 node_modules/
 server/node_modules/
 extension.wasm
+grammars/
 
 # AI tooling (installed via skills CLI, not project code)
 .opencode/
