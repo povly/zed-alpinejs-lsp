@@ -2856,6 +2856,88 @@ suite('References + Rename', () => {
   });
 });
 
+// ── Scope-Aware Diagnostics ──
+suite('Scope-Aware Diagnostics', () => {
+  test('unknown $store.NAME → Warning', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data x-init="$store.nonexistent.toggle()">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const storeDiags = diags.filter(d => d.code === 'unknown-store');
+    assert.ok(storeDiags.length >= 1);
+    assert.strictEqual(storeDiags[0].severity, DiagnosticSeverity.Warning);
+    assert.ok(storeDiags[0].message.includes('nonexistent'));
+  });
+
+  test('known $store.NAME → no diagnostic', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js', "Alpine.store('ui', { open: false })");
+    const html = '<div x-data x-init="$store.ui.toggle()">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const storeDiags = diags.filter(d => d.code === 'unknown-store');
+    assert.strictEqual(storeDiags.length, 0);
+  });
+
+  test('unknown magic property → Warning', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data x-init="$nonexistent()">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const magicDiags = diags.filter(d => d.code === 'unknown-magic');
+    assert.ok(magicDiags.length >= 1);
+    assert.ok(magicDiags[0].message.includes('$nonexistent'));
+  });
+
+  test('known magic ($el) → no diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data x-init="console.log($el)">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const magicDiags = diags.filter(d => d.code === 'unknown-magic');
+    assert.strictEqual(magicDiags.length, 0);
+  });
+
+  test('undefined method with "did you mean?" → Warning', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ toggle() {} }" @click="toggl()">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const undefDiags = diags.filter(d => d.code === 'undefined-method');
+    assert.ok(undefDiags.length >= 1);
+    assert.ok(undefDiags[0].message.includes('toggl'));
+    assert.ok(undefDiags[0].message.includes('Did you mean'), 'should have fuzzy hint: ' + undefDiags[0].message);
+    assert.ok(undefDiags[0].message.includes('toggle'));
+  });
+
+  test('defined method in scope → no diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ toggle() {} }" @click="toggle()">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const undefDiags = diags.filter(d => d.code === 'undefined-method');
+    assert.strictEqual(undefDiags.length, 0);
+  });
+
+  test('JS builtin (console.log) → no diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }" x-init="console.log(open)">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const undefDiags = diags.filter(d => d.code === 'undefined-method' && d.message.includes('console'));
+    assert.strictEqual(undefDiags.length, 0);
+  });
+
+  test('no scope (no x-data) → no method diagnostics', () => {
+    const { server } = createTestServer();
+    const html = '<button @click="someRandomMethod()">click</button>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const undefDiags = diags.filter(d => d.code === 'undefined-method');
+    assert.strictEqual(undefDiags.length, 0);
+  });
+});
+
 async function main() {
   if (asyncTests.length > 0) {
     await runAsync();

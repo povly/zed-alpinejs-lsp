@@ -17,7 +17,7 @@
 ### Новые LSP-возможности (после стабилизации)
 
 - [x] **Диагностика: базовые правила** — `x-if`/`x-for` вне `<template>`, несколько `x-data` на одном элементе, `x-data="name"` без регистрации `Alpine.data(name)` в воркспейсе
-- [ ] **Диагностика: scope-aware** — undefined method/property в `@click`/`x-data` scope с fuzzy-подсказками ("did you mean 'toggle()'?"), unknown `$store.name`, unknown magic property
+- [x] **Диагностика: scope-aware** — undefined method/property в `@click`/`x-data` scope с fuzzy-подсказками ("did you mean 'toggle()'?"), unknown `$store.name`, unknown magic property
 - [x] **Document Symbols** — outline x-data scope: методы/свойства как `SymbolKind.Method`/`Property`; регистрации `Alpine.data()`/`store()` как `SymbolKind.Function`. Низкий effort — парсинг уже есть
 - [x] **Document Links** — кликабельные `x-data="cart"` → `Alpine.data('cart')` регистрация; `$store.ui` → `Alpine.store('ui')`. Надстройка над существующим onDefinition
 - [x] **References + Rename** — find usages + rename для `x-ref`, компонентов `Alpine.data()`, stores `Alpine.store()`. Паритет с vscode-alpinejs-toolkit
@@ -43,3 +43,4 @@
 | Диагностика: базовые правила | 2026-08-09 |
 | Document Links | 2026-08-09 |
 | References + Rename | 2026-08-09 |
+| Диагностика: scope-aware | 2026-08-09 |

@@ -870,6 +870,76 @@ export class AlpineLanguageServer {
           elementGroups.set(tag.tagStartOffset, group);
         }
       }
+
+      // Unknown $store.NAME and $magic() — scope-aware diagnostic rules
+      const chains = findAllChainsInText(attr.value);
+      for (const c of chains) {
+        const chainAbsOffset = attr.valueOffset + c.offset;
+        if (c.type === '$store') {
+          const storeRegs = this.workspace.lookupAlpineStore(c.name);
+          if (storeRegs.length === 0) {
+            const chainLen = `$store.${c.name}`.length;
+            diagnostics.push({
+              range: {
+                start: doc.positionAt(chainAbsOffset),
+                end: doc.positionAt(chainAbsOffset + chainLen),
+              },
+              severity: DiagnosticSeverity.Warning,
+              source: 'alpinejs',
+              code: 'unknown-store',
+              message: `Unknown store '$store.${c.name}'`,
+            });
+          }
+        } else if (c.type === '$magic') {
+          const isKnown = MAGIC_PROPERTIES.some((p) => p.name === `$${c.name}`);
+          const isRegistered = this.workspace.lookupAlpineMagic(c.name).length > 0;
+          if (!isKnown && !isRegistered) {
+            const chainLen = `$${c.name}`.length;
+            diagnostics.push({
+              range: {
+                start: doc.positionAt(chainAbsOffset),
+                end: doc.positionAt(chainAbsOffset + chainLen),
+              },
+              severity: DiagnosticSeverity.Warning,
+              source: 'alpinejs',
+              code: 'unknown-magic',
+              message: `Unknown magic property '$${c.name}'`,
+            });
+          }
+        }
+      }
+
+      // Undefined method call with "did you mean?" fuzzy hint.
+      // Skips x-data (defines, not calls) and requires an enclosing x-data scope.
+      if (!isXData(attr.name) && attr.value) {
+        const members = this.getScopeMembers(uri, attr);
+        if (members.length > 0) {
+          const memberNames = new Set(members.map((m) => m.name));
+          const calls = extractMethodCalls(attr.value);
+          for (const call of calls) {
+            if (JS_BUILTINS.has(call.name)) continue;
+            if (memberNames.has(call.name)) continue;
+            if (call.name.startsWith('$')) continue;
+            const candidates = members
+              .filter((m) => m.kind === 'method' || m.kind === 'getter')
+              .map((m) => ({ name: m.name, dist: levenshtein(call.name, m.name) }))
+              .filter((x) => x.dist > 0 && x.dist <= 2)
+              .sort((a, b) => a.dist - b.dist);
+            const hint = candidates.length > 0 ? ` Did you mean '${candidates[0].name}'?` : '';
+            const callAbsOffset = attr.valueOffset + call.offset;
+            diagnostics.push({
+              range: {
+                start: doc.positionAt(callAbsOffset),
+                end: doc.positionAt(callAbsOffset + call.name.length),
+              },
+              severity: DiagnosticSeverity.Warning,
+              source: 'alpinejs',
+              code: 'undefined-method',
+              message: `Method '${call.name}' is not defined in scope.${hint}`,
+            });
+          }
+        }
+      }
     }
 
     for (const [, groupAttrs] of elementGroups) {
@@ -1157,6 +1227,52 @@ function findAllChainsInText(text: string): { type: string; name: string; offset
     if (magicName !== 'store') {
       results.push({ type: '$magic', name: magicName, offset: m.index });
     }
+  }
+  return results;
+}
+
+const JS_BUILTINS = new Set([
+  'this', 'console', 'window', 'document', 'JSON', 'Object', 'Array',
+  'Math', 'Date', 'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'Number', 'String', 'Boolean', 'RegExp', 'Error', 'Promise',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'fetch', 'alert', 'confirm', 'prompt', 'event', 'true', 'false',
+  'null', 'undefined', 'NaN', 'Infinity', 'typeof', 'instanceof',
+  'new', 'return', 'if', 'else', 'for', 'while', 'switch', 'case',
+  'break', 'continue', 'throw', 'try', 'catch', 'finally', 'void',
+  'delete', 'in', 'of', 'let', 'const', 'var', 'function', 'class',
+  'extends', 'super', 'import', 'export', 'default', 'from', 'as',
+  'async', 'await', 'yield', 'static', 'get', 'set',
+]);
+
+function levenshtein(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1,
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+function extractMethodCalls(text: string): { name: string; offset: number }[] {
+  const results: { name: string; offset: number }[] = [];
+  const regex = /\b(\w+)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    results.push({ name: m[1], offset: m.index });
   }
   return results;
 }
