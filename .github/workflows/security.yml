@@ -1,0 +1,36 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Еженедельная проверка уязвимостей — понедельник 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  # cargo-audit загружает SARIF-отчёт в Security tab
+  security-events: write
+
+jobs:
+  npm-audit:
+    name: npm audit (server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # moderate+ уровень — не падаем на low/info (типично для npm-экосистемы)
+      - run: npm audit --audit-level=moderate
+        working-directory: server
+
+  cargo-audit:
+    name: cargo audit (Rust deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
