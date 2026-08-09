@@ -2,12 +2,30 @@ use std::fs;
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
 const SERVER_FILES: &[(&str, &str)] = &[
-    ("server/dist/index.js", include_str!("../server/dist/index.js")),
-    ("server/dist/server.js", include_str!("../server/dist/server.js")),
-    ("server/dist/extractor.js", include_str!("../server/dist/extractor.js")),
-    ("server/dist/workspace.js", include_str!("../server/dist/workspace.js")),
-    ("server/dist/xdata.js", include_str!("../server/dist/xdata.js")),
-    ("server/dist/data.js", include_str!("../server/dist/data.js")),
+    (
+        "server/dist/index.js",
+        include_str!("../server/dist/index.js"),
+    ),
+    (
+        "server/dist/server.js",
+        include_str!("../server/dist/server.js"),
+    ),
+    (
+        "server/dist/extractor.js",
+        include_str!("../server/dist/extractor.js"),
+    ),
+    (
+        "server/dist/workspace.js",
+        include_str!("../server/dist/workspace.js"),
+    ),
+    (
+        "server/dist/xdata.js",
+        include_str!("../server/dist/xdata.js"),
+    ),
+    (
+        "server/dist/data.js",
+        include_str!("../server/dist/data.js"),
+    ),
 ];
 
 struct AlpineExtension {
@@ -33,8 +51,7 @@ impl AlpineExtension {
             if let Some(parent) = std::path::Path::new(path).parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            fs::write(path, content)
-                .map_err(|e| format!("Failed to write {path}: {e}"))?;
+            fs::write(path, content).map_err(|e| format!("Failed to write {path}: {e}"))?;
         }
 
         for (name, version) in [
