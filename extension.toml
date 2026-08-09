@@ -1,7 +1,7 @@
 id = "alpinejs-lsp"
 name = "Alpine.js LSP"
 description = "Alpine.js language server — completions, hover, go-to-definition for x-data, @click, and other Alpine directives across HTML and Blade."
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["povly"]
 repository = "https://github.com/povly/zed-alpinejs-lsp"
