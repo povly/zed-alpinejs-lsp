@@ -1,5 +1,7 @@
 export interface AlpineAttr {
     name: string;
+    nameOffset: number;
+    nameLength: number;
     value: string;
     valueOffset: number;
     valueLength: number;
@@ -7,6 +9,7 @@ export interface AlpineAttr {
 export declare function isAlpineAttr(name: string): boolean;
 export declare function extractAlpineAttrs(text: string): AlpineAttr[];
 export declare function findAttrAtOffset(attrs: AlpineAttr[], offset: number): AlpineAttr | null;
+export declare function findAttrByNameAtOffset(attrs: AlpineAttr[], offset: number): AlpineAttr | null;
 export interface AlpineRegistration {
     /** Component or store name, e.g. 'modal' or 'settings' */
     registrationName: string;
@@ -38,3 +41,8 @@ export declare function extractAlpineData(text: string): AlpineRegistration[];
 export declare function extractAlpineStore(text: string): AlpineRegistration[];
 export declare function normalizeAttrName(name: string): string;
 export declare function isXData(name: string): boolean;
+export declare function resolveDirectiveBase(attrName: string): string | null;
+export declare function getModifierAtOffset(attrName: string, relOffset: number): {
+    modifier: string;
+    base: string;
+} | null;

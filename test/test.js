@@ -7,7 +7,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { extractAlpineAttrs, findAttrAtOffset, isAlpineAttr, matchBraces } = require('../server/dist/extractor');
+const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces } = require('../server/dist/extractor');
+const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { createTestServer, loadDocument, DEBUG } = require('./helpers');
@@ -143,6 +144,143 @@ suite('findAttrAtOffset', () => {
     const attrs = extractAlpineAttrs(html);
     const attr = findAttrAtOffset(attrs, 0);
     assert.strictEqual(attr, null);
+  });
+});
+
+// ── extractor: AlpineAttr name position ─────────────────────
+
+suite('extractor: AlpineAttr name position', () => {
+  test('x-data nameOffset points to "x", nameLength = 6', () => {
+    const html = '<div x-data="test">';
+    const attrs = extractAlpineAttrs(html);
+    assert.strictEqual(attrs.length, 1);
+    assert.strictEqual(attrs[0].nameOffset, html.indexOf('x-data'));
+    assert.strictEqual(attrs[0].nameLength, 'x-data'.length);
+    assert.strictEqual(html.slice(attrs[0].nameOffset, attrs[0].nameOffset + attrs[0].nameLength), 'x-data');
+  });
+
+  test('x-on:click.stop nameLength covers full name incl. dots/colons', () => {
+    const html = '<button x-on:click.stop="fn()">';
+    const attrs = extractAlpineAttrs(html);
+    assert.strictEqual(attrs.length, 1);
+    assert.strictEqual(attrs[0].name, 'x-on:click.stop');
+    assert.strictEqual(attrs[0].nameLength, 'x-on:click.stop'.length);
+    assert.strictEqual(
+      html.slice(attrs[0].nameOffset, attrs[0].nameOffset + attrs[0].nameLength),
+      'x-on:click.stop',
+    );
+  });
+
+  test('findAttrByNameAtOffset returns attr when cursor inside name', () => {
+    const html = '<div x-data="test">';
+    const attrs = extractAlpineAttrs(html);
+    const nameStart = html.indexOf('x-data');
+    const mid = nameStart + 2;
+    const attr = findAttrByNameAtOffset(attrs, mid);
+    assert.ok(attr);
+    assert.strictEqual(attr.name, 'x-data');
+  });
+
+  test('findAttrByNameAtOffset returns null when cursor inside value', () => {
+    const html = '<div x-data="test">';
+    const attrs = extractAlpineAttrs(html);
+    const valOffset = html.indexOf('test');
+    const attr = findAttrByNameAtOffset(attrs, valOffset);
+    assert.strictEqual(attr, null);
+  });
+
+  test('findAttrByNameAtOffset returns null between attributes', () => {
+    const html = '<div x-data="a" @click="b">';
+    const attrs = extractAlpineAttrs(html);
+    const spaceBetween = html.indexOf('" ') + 1;
+    const attr = findAttrByNameAtOffset(attrs, spaceBetween);
+    assert.strictEqual(attr, null);
+  });
+
+  test('findAttrByNameAtOffset boundary: offset == nameOffset matches', () => {
+    const html = '<div x-data="test">';
+    const attrs = extractAlpineAttrs(html);
+    const attr = findAttrByNameAtOffset(attrs, attrs[0].nameOffset);
+    assert.ok(attr);
+  });
+});
+
+// ── extractor: directive base resolver ──────────────────────
+
+suite('extractor: directive base resolver', () => {
+  test('resolveDirectiveBase("x-on:click.stop") → "x-on"', () => {
+    assert.strictEqual(resolveDirectiveBase('x-on:click.stop'), 'x-on');
+  });
+
+  test('resolveDirectiveBase("@click") → "x-on"', () => {
+    assert.strictEqual(resolveDirectiveBase('@click'), 'x-on');
+  });
+
+  test('resolveDirectiveBase("x-model.lazy.number") → "x-model"', () => {
+    assert.strictEqual(resolveDirectiveBase('x-model.lazy.number'), 'x-model');
+  });
+
+  test('resolveDirectiveBase(":class") → "x-bind"', () => {
+    assert.strictEqual(resolveDirectiveBase(':class'), 'x-bind');
+  });
+
+  test('resolveDirectiveBase("x-transition:enter") → "x-transition"', () => {
+    assert.strictEqual(resolveDirectiveBase('x-transition:enter'), 'x-transition');
+  });
+
+  test('resolveDirectiveBase("x-data") → "x-data"', () => {
+    assert.strictEqual(resolveDirectiveBase('x-data'), 'x-data');
+  });
+
+  test('resolveDirectiveBase("x-unknown") → null', () => {
+    assert.strictEqual(resolveDirectiveBase('x-unknown'), null);
+  });
+
+  test('resolveDirectiveBase("class") → null (non-Alpine)', () => {
+    assert.strictEqual(resolveDirectiveBase('class'), null);
+  });
+
+  test('getModifierAtOffset("x-on:click.stop", 11) → {stop, x-on}', () => {
+    assert.deepStrictEqual(
+      getModifierAtOffset('x-on:click.stop', 11),
+      { modifier: 'stop', base: 'x-on' },
+    );
+  });
+
+  test('getModifierAtOffset("x-on:click.stop", 0) → null (on base)', () => {
+    assert.strictEqual(getModifierAtOffset('x-on:click.stop', 0), null);
+  });
+
+  test('getModifierAtOffset("@click.prevent", 7) → {prevent, x-on}', () => {
+    assert.deepStrictEqual(
+      getModifierAtOffset('@click.prevent', 7),
+      { modifier: 'prevent', base: 'x-on' },
+    );
+  });
+
+  test('getModifierAtOffset chained: "x-model.lazy.number" on "number" → {number, x-model}', () => {
+    const numIdx = 'x-model.lazy.number'.indexOf('number');
+    assert.deepStrictEqual(
+      getModifierAtOffset('x-model.lazy.number', numIdx),
+      { modifier: 'number', base: 'x-model' },
+    );
+  });
+
+  test('getModifierAtOffset chained: "x-model.lazy.number" on "lazy" → {lazy, x-model}', () => {
+    const lazyIdx = 'x-model.lazy.number'.indexOf('lazy');
+    assert.deepStrictEqual(
+      getModifierAtOffset('x-model.lazy.number', lazyIdx),
+      { modifier: 'lazy', base: 'x-model' },
+    );
+  });
+
+  test('getModifierAtOffset on dot punctuation → null', () => {
+    const dotIdx = 'x-on:click.stop'.indexOf('.');
+    assert.strictEqual(getModifierAtOffset('x-on:click.stop', dotIdx), null);
+  });
+
+  test('getModifierAtOffset when no dot exists → null', () => {
+    assert.strictEqual(getModifierAtOffset('x-data', 2), null);
   });
 });
 
@@ -809,6 +947,225 @@ suite('AlpineLanguageServer.onHover', () => {
       position: pos(0, 0),
     });
     assert.strictEqual(hover, null);
+  });
+});
+
+// ── onCompletion: modifiers ─────────────────────────────────
+
+suite('onCompletion: modifiers', () => {
+  test('x-on:click.| returns all 8 x-on modifiers', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click.="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('.') + 1;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('.stop'));
+    assert.ok(labels.includes('.prevent'));
+    assert.ok(labels.includes('.outside'));
+    assert.ok(labels.includes('.window'));
+    assert.ok(labels.includes('.document'));
+    assert.ok(labels.includes('.once'));
+    assert.ok(labels.includes('.debounce'));
+    assert.ok(labels.includes('.throttle'));
+    assert.strictEqual(labels.length, 8);
+    if (DEBUG_LOG) console.error(`[modifiers] x-on completion items=${items.length}`);
+  });
+
+  test('x-on:click.s| still includes .stop (client filters by prefix)', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click.s="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('.s') + 2;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('.stop'), '.stop should be present for client-side filtering');
+  });
+
+  test('x-model.| returns 4 x-model modifiers', () => {
+    const { server } = createTestServer();
+    const html = '<input x-model.="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('.') + 1;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('.lazy'));
+    assert.ok(labels.includes('.number'));
+    assert.ok(labels.includes('.debounce'));
+    assert.ok(labels.includes('.throttle'));
+    assert.strictEqual(labels.length, 4);
+  });
+
+  test('cursor in VALUE region (x-on:click="test.|") does NOT return modifiers', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false, test: { a: 1 } }"><button x-on:click="test.">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const valDot = html.lastIndexOf('.') + 1;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(valDot),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(!labels.some(l => l.startsWith('.')), 'no modifier items in value region');
+    assert.ok(labels.includes('test'), 'scope members still returned in value region');
+  });
+
+  test('cursor at start of value (after opening quote) does NOT return modifiers', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }"><button x-on:click="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const valStart = html.lastIndexOf('=""') + 2;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(valStart),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(!labels.some(l => l.startsWith('.')), 'no modifiers when cursor in value');
+  });
+
+  test('cursor on directive name without dot → [] (no modifiers yet)', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const onDirective = html.indexOf('x-on');
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(onDirective),
+    });
+    assert.deepStrictEqual(items, []);
+  });
+
+  test('modifier completion items use EnumMember kind + Modifier detail', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click.="">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('.') + 1;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const stop = items.find(i => i.label === '.stop');
+    assert.ok(stop);
+    assert.strictEqual(stop.kind, CompletionItemKind.EnumMember);
+    assert.strictEqual(stop.detail, 'Modifier for x-on');
+    assert.ok(stop.documentation);
+  });
+});
+
+// ── onHover: directives and modifiers ───────────────────────
+
+suite('onHover: directives and modifiers', () => {
+  test('hover on x-data name shows directive documentation', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-data');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.strictEqual(sig.language, 'plaintext');
+    assert.strictEqual(sig.value, 'x-data');
+    assert.ok(hover.contents[1].includes('Declares a new Alpine component scope.'));
+  });
+
+  test('hover on x-show name shows directive documentation', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }" x-show="open">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-show');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.ok(hover.contents[1].includes('Toggles `display:none`'));
+  });
+
+  test('hover on .stop modifier shows stopPropagation doc + "(for x-on)"', () => {
+    const { server } = createTestServer();
+    const html = '<button x-on:click.stop="fn()">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('stop');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.strictEqual(sig.value, '.stop');
+    assert.ok(hover.contents[1].includes('stopPropagation'));
+    assert.ok(hover.contents[1].includes('(for x-on)'));
+  });
+
+  test('hover on .prevent modifier in @click.prevent shows preventDefault doc', () => {
+    const { server } = createTestServer();
+    const html = '<button @click.prevent="fn()">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('prevent');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, '.prevent');
+    assert.ok(hover.contents[1].includes('preventDefault'));
+  });
+
+  test('hover on .lazy modifier in x-model.lazy shows change-event doc', () => {
+    const { server } = createTestServer();
+    const html = '<input x-model.lazy="val">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('lazy');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, '.lazy');
+    assert.ok(hover.contents[1].includes('change'));
+    assert.ok(hover.contents[1].includes('(for x-model)'));
+  });
+
+  test('hover on member in VALUE region uses existing member hover, NOT directive', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('open') + 1;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover, 'hover on value member should resolve');
+    const doc_text = hover.contents[1];
+    assert.ok(!doc_text.includes('Declares a new Alpine component scope'), 'must not show directive doc for value member');
+    const sig = hover.contents[0];
+    assert.ok(sig.value.includes('open'), 'should show member signature');
+  });
+
+  test('hover on x-transition:enter resolves base x-transition directive', () => {
+    const { server } = createTestServer();
+    const html = '<template x-transition:enter="">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('x-transition');
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.strictEqual(hover.contents[0].value, 'x-transition');
+    assert.ok(hover.contents[1].includes('Adds enter/leave CSS transitions.'));
   });
 });
 

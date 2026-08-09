@@ -1,5 +1,9 @@
+import { DIRECTIVES } from './data';
+
 export interface AlpineAttr {
   name: string;
+  nameOffset: number;
+  nameLength: number;
   value: string;
   valueOffset: number;
   valueLength: number;
@@ -35,6 +39,8 @@ export function extractAlpineAttrs(text: string): AlpineAttr[] {
 
     attrs.push({
       name: rawName,
+      nameOffset: match.index,
+      nameLength: rawName.length,
       value,
       valueOffset,
       valueLength: value.length,
@@ -51,6 +57,20 @@ export function findAttrAtOffset(
   for (const attr of attrs) {
     const start = attr.valueOffset;
     const end = attr.valueOffset + attr.valueLength;
+    if (offset >= start && offset <= end) {
+      return attr;
+    }
+  }
+  return null;
+}
+
+export function findAttrByNameAtOffset(
+  attrs: AlpineAttr[],
+  offset: number,
+): AlpineAttr | null {
+  for (const attr of attrs) {
+    const start = attr.nameOffset;
+    const end = attr.nameOffset + attr.nameLength;
     if (offset >= start && offset <= end) {
       return attr;
     }
@@ -239,4 +259,34 @@ export function normalizeAttrName(name: string): string {
 
 export function isXData(name: string): boolean {
   return name === 'x-data';
+}
+
+export function resolveDirectiveBase(attrName: string): string | null {
+  let name = attrName;
+  const dotIdx = name.indexOf('.');
+  if (dotIdx !== -1) name = name.slice(0, dotIdx);
+  if (name.startsWith('@')) name = 'x-on:' + name.slice(1);
+  else if (name.startsWith(':')) name = 'x-bind:' + name.slice(1);
+  const colonIdx = name.indexOf(':');
+  if (colonIdx !== -1) name = name.slice(0, colonIdx);
+  return DIRECTIVES.some((d) => d.name === name) ? name : null;
+}
+
+export function getModifierAtOffset(
+  attrName: string,
+  relOffset: number,
+): { modifier: string; base: string } | null {
+  if (relOffset < 0 || relOffset >= attrName.length) return null;
+  if (!/[\w]/.test(attrName[relOffset])) return null;
+  const firstDot = attrName.indexOf('.');
+  if (firstDot === -1 || relOffset <= firstDot) return null;
+  let start = relOffset;
+  while (start > firstDot && /[\w]/.test(attrName[start - 1])) start--;
+  let end = relOffset;
+  while (end < attrName.length && /[\w]/.test(attrName[end])) end++;
+  const modifier = attrName.slice(start, end);
+  if (!modifier) return null;
+  const base = resolveDirectiveBase(attrName);
+  if (!base) return null;
+  return { modifier, base };
 }

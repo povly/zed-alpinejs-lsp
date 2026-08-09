@@ -3,11 +3,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.isAlpineAttr = isAlpineAttr;
 exports.extractAlpineAttrs = extractAlpineAttrs;
 exports.findAttrAtOffset = findAttrAtOffset;
+exports.findAttrByNameAtOffset = findAttrByNameAtOffset;
 exports.matchBraces = matchBraces;
 exports.extractAlpineData = extractAlpineData;
 exports.extractAlpineStore = extractAlpineStore;
 exports.normalizeAttrName = normalizeAttrName;
 exports.isXData = isXData;
+exports.resolveDirectiveBase = resolveDirectiveBase;
+exports.getModifierAtOffset = getModifierAtOffset;
+const data_1 = require("./data");
 const ALPINE_PREFIXES = ['x-', '@', ':'];
 function isAlpineAttr(name) {
     return ALPINE_PREFIXES.some((p) => name.startsWith(p));
@@ -31,6 +35,8 @@ function extractAlpineAttrs(text) {
         const valueOffset = match.index + quotePosInMatch + 1;
         attrs.push({
             name: rawName,
+            nameOffset: match.index,
+            nameLength: rawName.length,
             value,
             valueOffset,
             valueLength: value.length,
@@ -42,6 +48,16 @@ function findAttrAtOffset(attrs, offset) {
     for (const attr of attrs) {
         const start = attr.valueOffset;
         const end = attr.valueOffset + attr.valueLength;
+        if (offset >= start && offset <= end) {
+            return attr;
+        }
+    }
+    return null;
+}
+function findAttrByNameAtOffset(attrs, offset) {
+    for (const attr of attrs) {
+        const start = attr.nameOffset;
+        const end = attr.nameOffset + attr.nameLength;
         if (offset >= start && offset <= end) {
             return attr;
         }
@@ -225,5 +241,41 @@ function normalizeAttrName(name) {
 }
 function isXData(name) {
     return name === 'x-data';
+}
+function resolveDirectiveBase(attrName) {
+    let name = attrName;
+    const dotIdx = name.indexOf('.');
+    if (dotIdx !== -1)
+        name = name.slice(0, dotIdx);
+    if (name.startsWith('@'))
+        name = 'x-on:' + name.slice(1);
+    else if (name.startsWith(':'))
+        name = 'x-bind:' + name.slice(1);
+    const colonIdx = name.indexOf(':');
+    if (colonIdx !== -1)
+        name = name.slice(0, colonIdx);
+    return data_1.DIRECTIVES.some((d) => d.name === name) ? name : null;
+}
+function getModifierAtOffset(attrName, relOffset) {
+    if (relOffset < 0 || relOffset >= attrName.length)
+        return null;
+    if (!/[\w]/.test(attrName[relOffset]))
+        return null;
+    const firstDot = attrName.indexOf('.');
+    if (firstDot === -1 || relOffset <= firstDot)
+        return null;
+    let start = relOffset;
+    while (start > firstDot && /[\w]/.test(attrName[start - 1]))
+        start--;
+    let end = relOffset;
+    while (end < attrName.length && /[\w]/.test(attrName[end]))
+        end++;
+    const modifier = attrName.slice(start, end);
+    if (!modifier)
+        return null;
+    const base = resolveDirectiveBase(attrName);
+    if (!base)
+        return null;
+    return { modifier, base };
 }
 //# sourceMappingURL=extractor.js.map

@@ -15,11 +15,14 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import {
   extractAlpineAttrs,
   findAttrAtOffset,
+  findAttrByNameAtOffset,
+  resolveDirectiveBase,
+  getModifierAtOffset,
   AlpineAttr,
   isXData,
 } from './extractor';
 import { parseXData, XDataMember } from './xdata';
-import { MAGIC_PROPERTIES } from './data';
+import { MAGIC_PROPERTIES, MODIFIERS, DIRECTIVES } from './data';
 import { WorkspaceIndex, WorkspaceDef } from './workspace';
 
 export class AlpineLanguageServer {
@@ -90,6 +93,29 @@ export class AlpineLanguageServer {
 
     const offset = doc.offsetAt(position);
     const attrs = this.attrCache.get(textDocument.uri) ?? [];
+
+    const nameAttr = findAttrByNameAtOffset(attrs, offset);
+    if (nameAttr) {
+      const relOffset = offset - nameAttr.nameOffset;
+      const textBefore = nameAttr.name.slice(0, relOffset);
+      if (/\.\w*$/.test(textBefore)) {
+        const base = resolveDirectiveBase(nameAttr.name);
+        this.connection.console.info(
+          `onCompletion: modifier context, base=${base ?? '<unknown>'}, attr="${nameAttr.name}"`,
+        );
+        if (!base) return [];
+        return MODIFIERS
+          .filter((m) => m.for.includes(base))
+          .map((m) => ({
+            label: m.name,
+            kind: CompletionItemKind.EnumMember,
+            detail: 'Modifier for ' + base,
+            documentation: m.documentation,
+          }));
+      }
+      return [];
+    }
+
     const attr = findAttrAtOffset(attrs, offset);
     if (!attr) return [];
 
@@ -150,6 +176,41 @@ export class AlpineLanguageServer {
 
     const offset = doc.offsetAt(params.position);
     const attrs = this.attrCache.get(params.textDocument.uri) ?? [];
+
+    const nameAttr = findAttrByNameAtOffset(attrs, offset);
+    if (nameAttr) {
+      const relOffset = offset - nameAttr.nameOffset;
+      const modResult = getModifierAtOffset(nameAttr.name, relOffset);
+      if (modResult) {
+        const modInfo = MODIFIERS.find((m) => m.name === '.' + modResult.modifier);
+        if (modInfo) {
+          this.connection.console.info(
+            `onHover: modifier ${modInfo.name} (for ${modInfo.for.join('/')})`,
+          );
+          return {
+            contents: [
+              { language: 'plaintext', value: modInfo.name },
+              `${modInfo.documentation} (for ${modInfo.for.join('/')})`,
+            ],
+          };
+        }
+      }
+      const base = resolveDirectiveBase(nameAttr.name);
+      if (base) {
+        const directive = DIRECTIVES.find((d) => d.name === base);
+        if (directive) {
+          this.connection.console.info(`onHover: directive ${directive.name}`);
+          return {
+            contents: [
+              { language: 'plaintext', value: directive.name },
+              directive.documentation +
+                (directive.example ? '\n\nExample: ' + directive.example : ''),
+            ],
+          };
+        }
+      }
+    }
+
     const attr = findAttrAtOffset(attrs, offset);
     if (!attr) return null;
 
