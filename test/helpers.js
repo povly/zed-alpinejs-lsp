@@ -47,6 +47,7 @@ function createTestServer() {
     onDocumentLinks: (fn) => { handlers.onDocumentLinks = fn; return disposable(); },
     onReferences: (fn) => { handlers.onReferences = fn; return disposable(); },
     onRenameRequest: (fn) => { handlers.onRenameRequest = fn; return disposable(); },
+    onCodeAction: (fn) => { handlers.onCodeAction = fn; return disposable(); },
     // Outbound notifications — no-op stubs (server sends diagnostics on change/close)
     sendDiagnostics: () => {},
     // TextDocuments.listen() registers these document lifecycle hooks

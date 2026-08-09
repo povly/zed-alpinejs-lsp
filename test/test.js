@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData, extractAlpineMagic } = require('../server/dist/extractor');
-const { CompletionItemKind, SymbolKind, DiagnosticSeverity } = require('../server/node_modules/vscode-languageserver/node');
+const { CompletionItemKind, SymbolKind, DiagnosticSeverity, CodeActionKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { DIRECTIVES, TRANSITION_SUBS, MODIFIERS, GLOBAL_APIS } = require('../server/dist/data');
@@ -2935,6 +2935,144 @@ suite('Scope-Aware Diagnostics', () => {
     const diags = server['computeDiagnostics']('file:///d.html', doc);
     const undefDiags = diags.filter(d => d.code === 'undefined-method');
     assert.strictEqual(undefDiags.length, 0);
+  });
+});
+
+suite('Code Actions', () => {
+  test('extract inline x-data → CodeAction with WorkspaceEdit', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 28 } },
+      context: { diagnostics: [] },
+    });
+    const extract = actions.find(a => a.kind === CodeActionKind.RefactorExtract);
+    assert.ok(extract, 'should have extract action');
+    assert.ok(extract.edit, 'should have edit');
+    assert.ok(extract.title.includes('Extract'), 'title should mention Extract');
+  });
+
+  test('x-if diagnostic → "Wrap in template" action', () => {
+    const { server } = createTestServer();
+    const html = '<div x-if="show">text</div>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diag = {
+      range: { start: { line: 0, character: 1 }, end: { line: 0, character: 16 } },
+      severity: 1,
+      source: 'alpinejs',
+      code: 'x-if-template',
+      message: 'x-if must be used on a <template> element',
+    };
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: diag.range,
+      context: { diagnostics: [diag] },
+    });
+    const wrap = actions.find(a => a.title.includes('template'));
+    assert.ok(wrap, 'should have wrap in template action');
+    assert.strictEqual(wrap.kind, CodeActionKind.QuickFix);
+    assert.ok(wrap.edit, 'should have edit');
+  });
+
+  test('duplicate-x-data diagnostic → "Remove duplicate x-data" action', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ a: 1 }" x-data="{ b: 2 }">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diag = {
+      range: { start: { line: 0, character: 23 }, end: { line: 0, character: 29 } },
+      severity: 1,
+      source: 'alpinejs',
+      code: 'duplicate-x-data',
+      message: 'Only one x-data is allowed per element',
+    };
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: diag.range,
+      context: { diagnostics: [diag] },
+    });
+    const remove = actions.find(a => a.title.includes('Remove'));
+    assert.ok(remove, 'should have remove action');
+    assert.strictEqual(remove.kind, CodeActionKind.QuickFix);
+  });
+
+  test('unregistered-component diagnostic → "Register component" action', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="nonexistent">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diag = {
+      range: { start: { line: 0, character: 13 }, end: { line: 0, character: 24 } },
+      severity: 2,
+      source: 'alpinejs',
+      code: 'unregistered-component',
+      message: "Component 'nonexistent' is not registered",
+    };
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: diag.range,
+      context: { diagnostics: [diag] },
+    });
+    const reg = actions.find(a => a.title.includes('Register'));
+    assert.ok(reg, 'should have register action');
+    assert.ok(reg.title.includes('nonexistent'), 'should mention component name');
+  });
+
+  test('no diagnostics, no inline x-data → empty actions', () => {
+    const { server } = createTestServer();
+    const html = '<div class="foo">no alpine</div>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+      context: { diagnostics: [] },
+    });
+    assert.strictEqual(actions.length, 0);
+  });
+
+  test('x-data with registered name → no extract action', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 20 } },
+      context: { diagnostics: [] },
+    });
+    const extract = actions.find(a => a.kind === CodeActionKind.RefactorExtract);
+    assert.ok(!extract, 'should not have extract action for registered name');
+  });
+
+  test('multiple diagnostics → multiple actions', () => {
+    const { server } = createTestServer();
+    const html = '<div x-if="show" x-data="unknown">text</div>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diag1 = { range: { start: { line: 0, character: 5 }, end: { line: 0, character: 9 } }, severity: 1, source: 'alpinejs', code: 'x-if-template', message: 'x-if must be on template' };
+    const diag2 = { range: { start: { line: 0, character: 25 }, end: { line: 0, character: 32 } }, severity: 2, source: 'alpinejs', code: 'unregistered-component', message: 'unregistered' };
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: diag1.range,
+      context: { diagnostics: [diag1, diag2] },
+    });
+    assert.ok(actions.length >= 2, 'should have at least 2 actions for 2 diagnostics');
+  });
+
+  test('action kind matches expected kind', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const actions = server['onCodeAction']({
+      textDocument: { uri: 'file:///d.html' },
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 28 } },
+      context: { diagnostics: [] },
+    });
+    for (const action of actions) {
+      assert.ok(
+        action.kind === CodeActionKind.RefactorExtract || action.kind === CodeActionKind.QuickFix,
+        'action kind should be RefactorExtract or QuickFix'
+      );
+    }
   });
 });
 

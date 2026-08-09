@@ -1,4 +1,7 @@
 import {
+  CodeAction,
+  CodeActionKind,
+  CodeActionParams,
   CompletionItem,
   CompletionItemKind,
   CompletionParams,
@@ -126,6 +129,7 @@ export class AlpineLanguageServer {
           documentLinkProvider: { resolveProvider: false },
           referencesProvider: true,
           renameProvider: { prepareProvider: false },
+          codeActionProvider: true,
           textDocumentSync: TextDocumentSyncKind.Full,
         },
       };
@@ -145,6 +149,9 @@ export class AlpineLanguageServer {
     });
     connection.onRenameRequest((params: RenameParams) => {
       return this.onRename(params);
+    });
+    connection.onCodeAction((params: CodeActionParams) => {
+      return this.onCodeAction(params);
     });
   }
 
@@ -818,6 +825,97 @@ export class AlpineLanguageServer {
       }
     }
     return { line, character: char };
+  }
+
+  private onCodeAction(params: CodeActionParams): CodeAction[] {
+    const uri = params.textDocument.uri;
+    const doc = this.documents.get(uri);
+    if (!doc) return [];
+
+    const actions: CodeAction[] = [];
+    const text = doc.getText();
+
+    for (const diag of params.context.diagnostics) {
+      if (diag.code === 'x-if-template') {
+        const startOffset = doc.offsetAt(diag.range.start);
+        const tag = findEnclosingTag(text, startOffset);
+        if (tag) {
+          const closeRegex = new RegExp(`</${tag.tagName}>`, 'i');
+          const closeMatch = closeRegex.exec(text);
+          const edits: TextEdit[] = [];
+          edits.push({
+            range: { start: doc.positionAt(tag.tagStartOffset + 1), end: doc.positionAt(tag.tagStartOffset + 1 + tag.tagName.length) },
+            newText: 'template',
+          });
+          if (closeMatch) {
+            edits.push({
+              range: { start: doc.positionAt(closeMatch.index + 2), end: doc.positionAt(closeMatch.index + 2 + tag.tagName.length) },
+              newText: 'template',
+            });
+          }
+          actions.push({ title: 'Wrap in <template>', kind: CodeActionKind.QuickFix, diagnostics: [diag], edit: { changes: { [uri]: edits } } });
+        }
+      }
+
+      if (diag.code === 'duplicate-x-data') {
+        const diagStart = doc.offsetAt(diag.range.start);
+        const diagEnd = doc.offsetAt(diag.range.end);
+        const allAttrs = this.attrCache.get(uri) ?? [];
+        const attr = allAttrs.find(a => isXData(a.name) && a.nameOffset >= diagStart && a.nameOffset <= diagEnd) ?? null;
+        if (attr) {
+          let removeStart = attr.nameOffset;
+          let removeEnd = attr.valueOffset > 0 ? attr.valueOffset + attr.valueLength : attr.nameOffset + attr.nameLength;
+          if (removeEnd < text.length && (text[removeEnd] === '"' || text[removeEnd] === "'")) removeEnd++;
+          while (removeStart > 0 && text[removeStart - 1] === ' ') removeStart--;
+          actions.push({ title: 'Remove duplicate x-data', kind: CodeActionKind.QuickFix, diagnostics: [diag], edit: { changes: { [uri]: [{ range: { start: doc.positionAt(removeStart), end: doc.positionAt(removeEnd) }, newText: '' }] } } });
+        }
+      }
+
+      if (diag.code === 'unregistered-component') {
+        const diagStart = doc.offsetAt(diag.range.start);
+        const diagEnd = doc.offsetAt(diag.range.end);
+        const allAttrs = this.attrCache.get(uri) ?? [];
+        const attr = allAttrs.find(a => isXData(a.name) && a.valueOffset <= diagStart && diagEnd <= a.valueOffset + a.valueLength) ?? null;
+        const cleanName = attr ? attr.value.trim() : '';
+        if (cleanName) {
+          const scriptMatch = /<script[^>]*>([\s\S]*?)<\/script>/i.exec(text);
+          const registration = `Alpine.data('${cleanName}', () => ({}))\n`;
+          if (scriptMatch) {
+            const insertOffset = scriptMatch.index + scriptMatch[0].length - '</script>'.length;
+            actions.push({ title: `Register Alpine.data('${cleanName}')`, kind: CodeActionKind.QuickFix, diagnostics: [diag], edit: { changes: { [uri]: [{ range: { start: doc.positionAt(insertOffset), end: doc.positionAt(insertOffset) }, newText: registration }] } } });
+          } else {
+            const docEnd = text.length;
+            actions.push({ title: `Register Alpine.data('${cleanName}')`, kind: CodeActionKind.QuickFix, diagnostics: [diag], edit: { changes: { [uri]: [{ range: { start: doc.positionAt(docEnd), end: doc.positionAt(docEnd) }, newText: `\n<script>\n${registration}</script>\n` }] } } });
+          }
+        }
+      }
+    }
+
+    // Extract inline x-data → Alpine.data()
+    const attrs = this.attrCache.get(uri) ?? [];
+    for (const attr of attrs) {
+      if (isXData(attr.name) && attr.value.trim().startsWith('{')) {
+        const value = attr.value;
+        const tag = findEnclosingTag(text, attr.nameOffset);
+        const suggestedName = tag ? tag.tagName.replace(/[^a-zA-Z0-9]/g, '') : '';
+        const finalName = suggestedName || 'component';
+        const edits: TextEdit[] = [];
+        edits.push({ range: { start: doc.positionAt(attr.valueOffset), end: doc.positionAt(attr.valueOffset + attr.valueLength) }, newText: finalName });
+        const scriptMatch = /<script[^>]*>([\s\S]*?)<\/script>/i.exec(text);
+        const registration = `Alpine.data('${finalName}', () => (${value}))\n`;
+        if (scriptMatch) {
+          const insertOffset = scriptMatch.index + scriptMatch[0].length - '</script>'.length;
+          edits.push({ range: { start: doc.positionAt(insertOffset), end: doc.positionAt(insertOffset) }, newText: registration });
+        } else {
+          const docEnd = text.length;
+          edits.push({ range: { start: doc.positionAt(docEnd), end: doc.positionAt(docEnd) }, newText: `\n<script>\n${registration}</script>\n` });
+        }
+        actions.push({ title: `Extract x-data to Alpine.data('${finalName}')`, kind: CodeActionKind.RefactorExtract, edit: { changes: { [uri]: edits } } });
+      }
+    }
+
+    this.connection.console.info(`[codeAction] returned ${actions.length} actions for ${uri}`);
+    return actions;
   }
 
   private computeDiagnostics(uri: string, doc: TextDocument): Diagnostic[] {

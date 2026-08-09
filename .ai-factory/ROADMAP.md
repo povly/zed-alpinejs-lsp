@@ -25,7 +25,7 @@
 ### Долгосрочные возможности (дифференциация)
 
 - [x] **Semantic Tokens** — цветовое выделение директив (`x-*`), magic properties (`$*`), модификаторов (`.prevent`) отдельно от HTML-атрибутов. Реализовано через tree-sitter injection queries (injections.scm + highlights.scm) вместо LSP semantic tokens — тот же визуальный результат через механизм Zed extension
-- [ ] **Code Actions** — извлечение inline `x-data="{...}"` в `Alpine.data()` регистрацию; quick-fix для directive misuse; `:class` ternary → object syntax
+- [x] **Code Actions** — извлечение inline `x-data="{...}"` в `Alpine.data()` регистрацию; quick-fix для directive misuse; `:class` ternary → object syntax
 
 ## Completed
 
@@ -44,3 +44,4 @@
 | Document Links | 2026-08-09 |
 | References + Rename | 2026-08-09 |
 | Диагностика: scope-aware | 2026-08-09 |
+| Code Actions | 2026-08-09 |

@@ -19,6 +19,7 @@ export declare class AlpineLanguageServer {
      * to scanning raw workspace text (only open files have a TextDocument).
      */
     private offsetToPosition;
+    private onCodeAction;
     private computeDiagnostics;
     private getScopeMembers;
     private getXDataScope;
