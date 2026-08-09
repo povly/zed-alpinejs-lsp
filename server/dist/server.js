@@ -24,6 +24,8 @@ class AlpineLanguageServer {
                 const text = document.getText();
                 const attrs = (0, extractor_1.extractAlpineAttrs)(text);
                 this.attrCache.set(uri, attrs);
+                const diagnostics = this.computeDiagnostics(uri, document);
+                this.connection.sendDiagnostics({ uri, diagnostics });
                 // Debounced (300ms): workspace index update coalesces rapid keystrokes
                 // into a single incremental rebuild per URI.
                 if (this.indexDebounceTimer)
@@ -51,6 +53,7 @@ class AlpineLanguageServer {
             }
         });
         this.documents.onDidClose(({ document }) => {
+            this.connection.sendDiagnostics({ uri: document.uri, diagnostics: [] });
             this.attrCache.delete(document.uri);
         });
         connection.onInitialize((params) => {
@@ -79,6 +82,10 @@ class AlpineLanguageServer {
                     hoverProvider: true,
                     definitionProvider: true,
                     documentSymbolProvider: true,
+                    diagnosticProvider: {
+                        interFileDependencies: false,
+                        workspaceDiagnostics: false,
+                    },
                     textDocumentSync: node_1.TextDocumentSyncKind.Full,
                 },
             };
@@ -492,6 +499,72 @@ class AlpineLanguageServer {
         this.connection.console.info(`[documentSymbol] returned ${symbols.length} symbols for ${uri}`);
         return symbols;
     }
+    computeDiagnostics(uri, doc) {
+        const attrs = this.attrCache.get(uri) ?? [];
+        const text = doc.getText();
+        const diagnostics = [];
+        const elementGroups = new Map();
+        for (const attr of attrs) {
+            const normalized = (0, extractor_1.normalizeAttrName)(attr.name);
+            if (normalized === 'x-if' || normalized === 'x-for') {
+                const tag = findEnclosingTag(text, attr.nameOffset);
+                if (tag && tag.tagName !== 'template') {
+                    diagnostics.push({
+                        range: {
+                            start: doc.positionAt(attr.nameOffset),
+                            end: doc.positionAt(attr.nameOffset + attr.nameLength),
+                        },
+                        severity: node_1.DiagnosticSeverity.Error,
+                        source: 'alpinejs',
+                        code: 'x-if-template',
+                        message: `${normalized} must be used on a <template> element`,
+                    });
+                }
+            }
+            if ((0, extractor_1.isXData)(attr.name)) {
+                const value = attr.value.trim();
+                if (value && !value.startsWith('{') && !value.startsWith('(')) {
+                    const registered = this.workspace.lookupAlpineData(value);
+                    if (registered.length === 0) {
+                        diagnostics.push({
+                            range: {
+                                start: doc.positionAt(attr.valueOffset),
+                                end: doc.positionAt(attr.valueOffset + attr.valueLength),
+                            },
+                            severity: node_1.DiagnosticSeverity.Warning,
+                            source: 'alpinejs',
+                            code: 'unregistered-component',
+                            message: `Component '${value}' is not registered via Alpine.data()`,
+                        });
+                    }
+                }
+                const tag = findEnclosingTag(text, attr.nameOffset);
+                if (tag) {
+                    const group = elementGroups.get(tag.tagStartOffset) ?? [];
+                    group.push(attr);
+                    elementGroups.set(tag.tagStartOffset, group);
+                }
+            }
+        }
+        for (const [, groupAttrs] of elementGroups) {
+            if (groupAttrs.length > 1) {
+                for (const attr of groupAttrs) {
+                    diagnostics.push({
+                        range: {
+                            start: doc.positionAt(attr.nameOffset),
+                            end: doc.positionAt(attr.nameOffset + attr.nameLength),
+                        },
+                        severity: node_1.DiagnosticSeverity.Error,
+                        source: 'alpinejs',
+                        code: 'duplicate-x-data',
+                        message: `Only one x-data is allowed per element (found ${groupAttrs.length})`,
+                    });
+                }
+            }
+        }
+        this.connection.console.info(`[diagnostics] computed ${diagnostics.length} diagnostics for ${uri}`);
+        return diagnostics;
+    }
     getScopeMembers(uri, attr) {
         const xdata = this.getXDataScope(uri, attr);
         if (!xdata)
@@ -712,5 +785,21 @@ function getChainAtOffset(text, offset) {
     if (!segments[0].startsWith('$'))
         return null;
     return segments;
+}
+function findEnclosingTag(text, offset) {
+    let i = offset;
+    while (i >= 0) {
+        if (text[i] === '<' && i + 1 < text.length && text[i + 1] !== '/') {
+            let j = i + 1;
+            while (j < text.length && /[\w-]/.test(text[j]))
+                j++;
+            const tagName = text.slice(i + 1, j).toLowerCase();
+            if (tagName)
+                return { tagName, tagStartOffset: i };
+            return null;
+        }
+        i--;
+    }
+    return null;
 }
 //# sourceMappingURL=server.js.map

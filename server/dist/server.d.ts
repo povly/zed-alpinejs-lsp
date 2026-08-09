@@ -11,6 +11,7 @@ export declare class AlpineLanguageServer {
     private onHover;
     private onDefinition;
     private onDocumentSymbol;
+    private computeDiagnostics;
     private getScopeMembers;
     private getXDataScope;
     private findScopeXData;

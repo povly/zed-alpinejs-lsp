@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData, extractAlpineMagic } = require('../server/dist/extractor');
-const { CompletionItemKind, SymbolKind } = require('../server/node_modules/vscode-languageserver/node');
+const { CompletionItemKind, SymbolKind, DiagnosticSeverity } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { DIRECTIVES, TRANSITION_SUBS, MODIFIERS, GLOBAL_APIS } = require('../server/dist/data');
@@ -2597,6 +2597,81 @@ suite('Document Symbols', () => {
       assert.ok(startPos.line >= 0 && startPos.character >= 0, `${sym.name} start position invalid`);
       assert.ok(endPos.line >= startPos.line, `${sym.name} end before start`);
     }
+  });
+});
+
+// ── computeDiagnostics ──
+suite('Diagnostics', () => {
+  test('x-if outside template → Error diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<div x-if="show">text</div>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].severity, DiagnosticSeverity.Error);
+    assert.strictEqual(diags[0].code, 'x-if-template');
+  });
+
+  test('x-if inside template → no diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<template x-if="show"><div>text</div></template>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const templateDiags = diags.filter(d => d.code === 'x-if-template');
+    assert.strictEqual(templateDiags.length, 0);
+  });
+
+  test('x-for outside template → Error', () => {
+    const { server } = createTestServer();
+    const html = '<div x-for="item in items">text</div>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    assert.ok(diags.some(d => d.code === 'x-if-template' && d.severity === DiagnosticSeverity.Error));
+  });
+
+  test('duplicate x-data on same element → Error', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ a: 1 }" x-data="{ b: 2 }">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const dupDiags = diags.filter(d => d.code === 'duplicate-x-data');
+    assert.strictEqual(dupDiags.length, 2);
+    assert.strictEqual(dupDiags[0].severity, DiagnosticSeverity.Error);
+  });
+
+  test('unregistered component → Warning', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="nonexistent">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    assert.ok(diags.some(d => d.code === 'unregistered-component' && d.severity === DiagnosticSeverity.Warning));
+  });
+
+  test('registered component → no unregistered diagnostic', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const unregDiags = diags.filter(d => d.code === 'unregistered-component');
+    assert.strictEqual(unregDiags.length, 0);
+  });
+
+  test('inline x-data → no unregistered diagnostic', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    const unregDiags = diags.filter(d => d.code === 'unregistered-component');
+    assert.strictEqual(unregDiags.length, 0);
+  });
+
+  test('clean document → no diagnostics', () => {
+    const { server } = createTestServer();
+    const html = '<template x-if="show"><div x-data="{ a: 1 }"></div></template>';
+    const doc = loadDocument(server, 'file:///d.html', html);
+    const diags = server['computeDiagnostics']('file:///d.html', doc);
+    assert.strictEqual(diags.length, 0);
   });
 });
 
