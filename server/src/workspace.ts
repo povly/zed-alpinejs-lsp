@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { extractAlpineAttrs, isXData, extractAlpineData, extractAlpineStore, AlpineRegistration } from './extractor';
+import { extractAlpineAttrs, isXData, extractAlpineData, extractAlpineStore, AlpineRegistration, AlpineAttr } from './extractor';
 import { parseXData, XDataMember } from './xdata';
 
 export interface WorkspaceDef {
@@ -52,11 +52,12 @@ export class WorkspaceIndex {
   private dataRegistrations = new Map<string, { def: WorkspaceDef; text: string }[]>();
   private storeRegistrations = new Map<string, { def: WorkspaceDef; text: string }[]>();
 
-  indexDocument(uri: string, text: string): void {
+  indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void {
+    const oldDefs = this.fileDefs.get(uri) ?? [];
     this.fileTexts.set(uri, text);
-    const defs = this.extractDefinitions(uri, text);
-    this.fileDefs.set(uri, defs);
-    this.rebuildIndexes();
+    const newDefs = this.extractDefinitions(uri, text, precomputedAttrs);
+    this.fileDefs.set(uri, newDefs);
+    this.updateIndexesForUri(uri, oldDefs, newDefs);
   }
 
   removeDocument(uri: string): void {
@@ -173,11 +174,12 @@ export class WorkspaceIndex {
     this.rebuildIndexes();
   }
 
-  private extractDefinitions(uri: string, text: string): WorkspaceDef[] {
+  private extractDefinitions(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): WorkspaceDef[] {
     const defs: WorkspaceDef[] = [];
     const file = basename(uri);
 
-    for (const attr of extractAlpineAttrs(text)) {
+    const attrs = precomputedAttrs ?? extractAlpineAttrs(text);
+    for (const attr of attrs) {
       if (!isXData(attr.name)) continue;
       for (const m of parseXData(attr.value)) {
         defs.push(this.makeDef(m, 'x-data', uri, attr.valueOffset + m.offset, file));
@@ -223,6 +225,91 @@ export class WorkspaceIndex {
       length: m.length,
       sourceFile,
     };
+  }
+
+  /**
+   * Incremental update of derived maps for one URI: O(D_uri) vs O(F*D) full rebuild.
+   * Identity = (uri + startOffset), NOT name — same name can live in many files.
+   */
+  private updateIndexesForUri(
+    uri: string,
+    oldDefs: WorkspaceDef[],
+    newDefs: WorkspaceDef[],
+  ): void {
+    for (const def of oldDefs) {
+      this.removeFromNameIndex(def);
+      if (def.registrationKind === 'Alpine.data') {
+        this.removeFromRegistrations(this.dataRegistrations, def);
+      }
+      if (def.registrationKind === 'Alpine.store') {
+        this.removeFromRegistrations(this.storeRegistrations, def);
+      }
+    }
+    for (const def of newDefs) {
+      this.insertIntoNameIndex(def);
+      if (def.registrationKind === 'Alpine.data') {
+        this.insertIntoRegistrations(this.dataRegistrations, def, uri);
+      }
+      if (def.registrationKind === 'Alpine.store') {
+        this.insertIntoRegistrations(this.storeRegistrations, def, uri);
+      }
+    }
+  }
+
+  private removeFromNameIndex(def: WorkspaceDef): void {
+    const arr = this.nameIndex.get(def.name);
+    if (!arr) return;
+    const filtered = arr.filter(
+      (d) => !(d.uri === def.uri && d.startOffset === def.startOffset),
+    );
+    if (filtered.length === 0) {
+      this.nameIndex.delete(def.name);
+    } else {
+      this.nameIndex.set(def.name, filtered);
+    }
+  }
+
+  private removeFromRegistrations(
+    regMap: Map<string, { def: WorkspaceDef; text: string }[]>,
+    def: WorkspaceDef,
+  ): void {
+    const name = def.registrationName;
+    if (name === undefined) return;
+    const arr = regMap.get(name);
+    if (!arr) return;
+    const filtered = arr.filter(
+      (entry) => !(entry.def.uri === def.uri && entry.def.startOffset === def.startOffset),
+    );
+    if (filtered.length === 0) {
+      regMap.delete(name);
+    } else {
+      regMap.set(name, filtered);
+    }
+  }
+
+  private insertIntoNameIndex(def: WorkspaceDef): void {
+    const arr = this.nameIndex.get(def.name);
+    if (arr) {
+      arr.push(def);
+    } else {
+      this.nameIndex.set(def.name, [def]);
+    }
+  }
+
+  private insertIntoRegistrations(
+    regMap: Map<string, { def: WorkspaceDef; text: string }[]>,
+    def: WorkspaceDef,
+    uri: string,
+  ): void {
+    const name = def.registrationName;
+    if (name === undefined) return;
+    const text = this.fileTexts.get(uri) ?? '';
+    const arr = regMap.get(name);
+    if (arr) {
+      arr.push({ def, text });
+    } else {
+      regMap.set(name, [{ def, text }]);
+    }
   }
 
   private rebuildIndexes(): void {

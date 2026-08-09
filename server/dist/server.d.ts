@@ -4,6 +4,7 @@ export declare class AlpineLanguageServer {
     private documents;
     private attrCache;
     private workspace;
+    private indexDebounceTimer;
     constructor(connection: Connection);
     start(): void;
     private onCompletion;

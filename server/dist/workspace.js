@@ -69,11 +69,12 @@ class WorkspaceIndex {
     nameIndex = new Map();
     dataRegistrations = new Map();
     storeRegistrations = new Map();
-    indexDocument(uri, text) {
+    indexDocument(uri, text, precomputedAttrs) {
+        const oldDefs = this.fileDefs.get(uri) ?? [];
         this.fileTexts.set(uri, text);
-        const defs = this.extractDefinitions(uri, text);
-        this.fileDefs.set(uri, defs);
-        this.rebuildIndexes();
+        const newDefs = this.extractDefinitions(uri, text, precomputedAttrs);
+        this.fileDefs.set(uri, newDefs);
+        this.updateIndexesForUri(uri, oldDefs, newDefs);
     }
     removeDocument(uri) {
         this.fileDefs.delete(uri);
@@ -177,10 +178,11 @@ class WorkspaceIndex {
         walk(rootPath, 0);
         this.rebuildIndexes();
     }
-    extractDefinitions(uri, text) {
+    extractDefinitions(uri, text, precomputedAttrs) {
         const defs = [];
         const file = basename(uri);
-        for (const attr of (0, extractor_1.extractAlpineAttrs)(text)) {
+        const attrs = precomputedAttrs ?? (0, extractor_1.extractAlpineAttrs)(text);
+        for (const attr of attrs) {
             if (!(0, extractor_1.isXData)(attr.name))
                 continue;
             for (const m of (0, xdata_1.parseXData)(attr.value)) {
@@ -217,6 +219,79 @@ class WorkspaceIndex {
             length: m.length,
             sourceFile,
         };
+    }
+    /**
+     * Incremental update of derived maps for one URI: O(D_uri) vs O(F*D) full rebuild.
+     * Identity = (uri + startOffset), NOT name — same name can live in many files.
+     */
+    updateIndexesForUri(uri, oldDefs, newDefs) {
+        for (const def of oldDefs) {
+            this.removeFromNameIndex(def);
+            if (def.registrationKind === 'Alpine.data') {
+                this.removeFromRegistrations(this.dataRegistrations, def);
+            }
+            if (def.registrationKind === 'Alpine.store') {
+                this.removeFromRegistrations(this.storeRegistrations, def);
+            }
+        }
+        for (const def of newDefs) {
+            this.insertIntoNameIndex(def);
+            if (def.registrationKind === 'Alpine.data') {
+                this.insertIntoRegistrations(this.dataRegistrations, def, uri);
+            }
+            if (def.registrationKind === 'Alpine.store') {
+                this.insertIntoRegistrations(this.storeRegistrations, def, uri);
+            }
+        }
+    }
+    removeFromNameIndex(def) {
+        const arr = this.nameIndex.get(def.name);
+        if (!arr)
+            return;
+        const filtered = arr.filter((d) => !(d.uri === def.uri && d.startOffset === def.startOffset));
+        if (filtered.length === 0) {
+            this.nameIndex.delete(def.name);
+        }
+        else {
+            this.nameIndex.set(def.name, filtered);
+        }
+    }
+    removeFromRegistrations(regMap, def) {
+        const name = def.registrationName;
+        if (name === undefined)
+            return;
+        const arr = regMap.get(name);
+        if (!arr)
+            return;
+        const filtered = arr.filter((entry) => !(entry.def.uri === def.uri && entry.def.startOffset === def.startOffset));
+        if (filtered.length === 0) {
+            regMap.delete(name);
+        }
+        else {
+            regMap.set(name, filtered);
+        }
+    }
+    insertIntoNameIndex(def) {
+        const arr = this.nameIndex.get(def.name);
+        if (arr) {
+            arr.push(def);
+        }
+        else {
+            this.nameIndex.set(def.name, [def]);
+        }
+    }
+    insertIntoRegistrations(regMap, def, uri) {
+        const name = def.registrationName;
+        if (name === undefined)
+            return;
+        const text = this.fileTexts.get(uri) ?? '';
+        const arr = regMap.get(name);
+        if (arr) {
+            arr.push({ def, text });
+        }
+        else {
+            regMap.set(name, [{ def, text }]);
+        }
     }
     rebuildIndexes() {
         this.nameIndex.clear();

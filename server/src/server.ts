@@ -29,15 +29,33 @@ export class AlpineLanguageServer {
   private documents = new TextDocuments(TextDocument);
   private attrCache = new Map<string, AlpineAttr[]>();
   private workspace = new WorkspaceIndex();
+  private indexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private connection: Connection) {
     this.documents.listen(connection);
 
     this.documents.onDidChangeContent(({ document }) => {
       try {
-        const attrs = extractAlpineAttrs(document.getText());
-        this.attrCache.set(document.uri, attrs);
-        this.workspace.indexDocument(document.uri, document.getText());
+        // Eager: attrCache updates immediately for instant completion/hover.
+        const text = document.getText();
+        const uri = document.uri;
+        const attrs = extractAlpineAttrs(text);
+        this.attrCache.set(uri, attrs);
+
+        // Debounced (300ms): workspace index update coalesces rapid keystrokes
+        // into a single incremental rebuild per URI.
+        if (this.indexDebounceTimer) clearTimeout(this.indexDebounceTimer);
+        this.indexDebounceTimer = setTimeout(() => {
+          try {
+            const cachedAttrs = this.attrCache.get(uri);
+            this.workspace.indexDocument(uri, text, cachedAttrs ?? undefined);
+            this.connection.console.info(
+              `onDidChangeContent: workspace indexed (debounced) for ${uri}`,
+            );
+          } catch (e) {
+            this.connection.console.error(`Index error: ${e}`);
+          }
+        }, 300);
       } catch (e) {
         this.connection.console.error(`Parse error: ${e}`);
       }

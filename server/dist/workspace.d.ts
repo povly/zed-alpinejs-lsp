@@ -1,3 +1,4 @@
+import { AlpineAttr } from './extractor';
 export interface WorkspaceDef {
     name: string;
     kind: 'method' | 'property' | 'getter';
@@ -19,7 +20,7 @@ export declare class WorkspaceIndex {
     private nameIndex;
     private dataRegistrations;
     private storeRegistrations;
-    indexDocument(uri: string, text: string): void;
+    indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void;
     removeDocument(uri: string): void;
     getText(uri: string): string | undefined;
     lookup(name: string): WorkspaceDef[];
@@ -47,5 +48,14 @@ export declare class WorkspaceIndex {
     scanWorkspace(rootPath: string): void;
     private extractDefinitions;
     private makeDef;
+    /**
+     * Incremental update of derived maps for one URI: O(D_uri) vs O(F*D) full rebuild.
+     * Identity = (uri + startOffset), NOT name — same name can live in many files.
+     */
+    private updateIndexesForUri;
+    private removeFromNameIndex;
+    private removeFromRegistrations;
+    private insertIntoNameIndex;
+    private insertIntoRegistrations;
     private rebuildIndexes;
 }

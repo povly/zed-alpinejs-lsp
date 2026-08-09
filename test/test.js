@@ -13,6 +13,7 @@ const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { DIRECTIVES, TRANSITION_SUBS } = require('../server/dist/data');
 const { createTestServer, loadDocument, DEBUG } = require('./helpers');
+const { TextDocument } = require('../server/node_modules/vscode-languageserver-textdocument');
 
 const DEBUG_LOG = process.env.LOG_LEVEL === 'debug';
 const pos = (line, character) => ({ line, character });
@@ -32,9 +33,36 @@ function test(name, fn) {
   }
 }
 
+// Async variant — runs the test, returns a promise. Exits process when all done.
+const asyncTests = [];
+function testAsync(name, fn) {
+  asyncTests.push({ name, fn });
+}
+
 function suite(title, fn) {
   console.log(`\n${title}`);
   fn();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Trigger the server's real onDidChangeContent handler by firing the
+ * underlying TextDocuments emitter directly. Bypasses loadDocument (which
+ * pokes attrCache + workspace directly) so we exercise the debounce path.
+ */
+function fireDidChangeContent(server, uri, text) {
+  const doc = TextDocument.create(uri, 'html', 1, text);
+  const documents = server['documents'];
+  if (!documents.__alpineTestDocs) {
+    documents.__alpineTestDocs = new Map();
+    documents.get = (u) => documents.__alpineTestDocs.get(u);
+  }
+  documents.__alpineTestDocs.set(uri, doc);
+  documents._onDidChangeContent.fire({ document: doc });
+  return doc;
 }
 
 // ── extractAlpineAttrs ──────────────────────────────────────
@@ -1557,8 +1585,227 @@ suite('onHover: x-transition sub-attributes', () => {
   });
 });
 
+// ── server: debounce onDidChangeContent ─────────────────────
+
+suite('server: debounce onDidChangeContent', () => {
+  test('attrCache updated eagerly (synchronous, no debounce wait)', () => {
+    const { server } = createTestServer();
+    fireDidChangeContent(server, 'file:///debounce1.html', '<div x-data="{ open: false }">');
+    const attrs = server['attrCache'].get('file:///debounce1.html');
+    assert.ok(attrs && attrs.length === 1, 'attrCache must be populated synchronously');
+    assert.strictEqual(attrs[0].name, 'x-data');
+    if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+  });
+
+  test('attrCache reflects latest text after rapid changes', () => {
+    const { server } = createTestServer();
+    fireDidChangeContent(server, 'file:///debounce2.html', '<div x-data="{ a: 1 }">');
+    fireDidChangeContent(server, 'file:///debounce2.html', '<div x-data="{ b: 2 }">');
+    const attrs = server['attrCache'].get('file:///debounce2.html');
+    assert.ok(attrs && attrs.length === 1);
+    assert.ok(attrs[0].value.includes('b:'), 'attrCache must hold the LATEST text');
+    if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+  });
+
+  test('indexDebounceTimer is set after change (pending workspace update)', () => {
+    const { server } = createTestServer();
+    assert.strictEqual(server['indexDebounceTimer'], null, 'no timer before any change');
+    fireDidChangeContent(server, 'file:///debounce3.html', '<div x-data="{ open: false }">');
+    assert.ok(server['indexDebounceTimer'] !== null, 'timer must be pending after change');
+    if (server['indexDebounceTimer']) clearTimeout(server['indexDebounceTimer']);
+  });
+
+  testAsync('workspace indexed only after 300ms debounce elapses', async () => {
+    const { server } = createTestServer();
+    fireDidChangeContent(server, 'file:///debounce4.html', '<div x-data="{ open: false }">');
+    assert.strictEqual(server['workspace'].lookup('open').length, 0,
+      'workspace must NOT be updated synchronously');
+    await sleep(350);
+    assert.strictEqual(server['workspace'].lookup('open').length, 1,
+      'workspace must be indexed after debounce delay');
+  });
+
+  testAsync('3 rapid changes coalesce into single workspace.indexDocument call', async () => {
+    const { server } = createTestServer();
+    fireDidChangeContent(server, 'file:///debounce5.html', '<div x-data="{ a: 1 }">');
+    await sleep(50);
+    fireDidChangeContent(server, 'file:///debounce5.html', '<div x-data="{ a: 1, b: 2 }">');
+    await sleep(50);
+    fireDidChangeContent(server, 'file:///debounce5.html', '<div x-data="{ a: 1, b: 2, c: 3 }">');
+    await sleep(350);
+    const names = server['workspace'].allNames().sort();
+    assert.deepStrictEqual(names, ['a', 'b', 'c'],
+      'only the final state must be indexed (3 members), not intermediate ones');
+  });
+});
+
+// ── workspace: incremental index update ─────────────────────
+
+suite('workspace: incremental index update', () => {
+  test('add method to file: new name appears, other file untouched', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false }">');
+    ws.indexDocument('file:///b.html', '<div x-data="{ count: 0 }">');
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false, toggle() {} }">');
+    assert.ok(ws.lookup('toggle').length > 0, 'toggle added via incremental update');
+    assert.ok(ws.lookup('open').length > 0, 'open still present');
+    assert.ok(ws.lookup('count').length === 1, 'count in file b untouched');
+  });
+
+  test('remove all defs from file (empty new): old names disappear', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false, count: 0 }">');
+    ws.indexDocument('file:///b.html', '<div x-data="{ other: true }">');
+    ws.indexDocument('file:///a.html', '<div>');
+    assert.strictEqual(ws.lookup('open').length, 0, 'open removed');
+    assert.strictEqual(ws.lookup('count').length, 0, 'count removed');
+    assert.ok(ws.lookup('other').length > 0, 'other still in file b');
+  });
+
+  test('rename method: old name gone, new name present', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false }">');
+    ws.indexDocument('file:///a.html', '<div x-data="{ closed: true }">');
+    assert.strictEqual(ws.lookup('open').length, 0, 'old name gone');
+    assert.ok(ws.lookup('closed').length > 0, 'new name present');
+  });
+
+  test('add Alpine.data registration: appears in dataRegistrations', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false }">');
+    assert.strictEqual(ws.allDataNames().length, 0);
+    ws.indexDocument('file:///a.html',
+      '<div x-data="{ open: false }"> Alpine.data(\'cart\', () => ({ items: [] }))');
+    assert.ok(ws.allDataNames().includes('cart'), 'cart registration added');
+    assert.ok(ws.lookupAlpineData('cart').length === 1);
+  });
+
+  test('remove Alpine.store: disappears from storeRegistrations', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///s.js', "Alpine.store('ui', { theme: 'dark' })");
+    assert.ok(ws.allStoreNames().includes('ui'));
+    ws.indexDocument('file:///s.js', '// nothing here');
+    assert.strictEqual(ws.allStoreNames().length, 0, 'store removed on reindex');
+    assert.strictEqual(ws.lookupAlpineStore('ui').length, 0);
+  });
+
+  test('same name in 2 files: removing one file keeps the other', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.html', '<div x-data="{ open: false }">');
+    ws.indexDocument('file:///b.html', '<div x-data="{ open: true }">');
+    assert.strictEqual(ws.lookup('open').length, 2);
+    ws.indexDocument('file:///b.html', '<div x-data="{ closed: false }">');
+    assert.strictEqual(ws.lookup('open').length, 1, 'only file a open remains');
+    const remaining = ws.lookup('open')[0];
+    assert.strictEqual(remaining.uri, 'file:///a.html');
+  });
+
+  test('incremental update produces identical result to full rebuildIndexes', () => {
+    const inc = new WorkspaceIndex();
+    inc.indexDocument('file:///a.html', '<div x-data="{ open: false, toggle() {} }">');
+    inc.indexDocument('file:///b.js', "Alpine.data('cart', () => ({ items: [], add() {} }))");
+    inc.indexDocument('file:///c.js', "Alpine.store('ui', { theme: 'dark' })");
+    inc.indexDocument('file:///a.html', '<div x-data="{ open: false, toggle() {}, close() {} }">');
+    inc.indexDocument('file:///b.js', "Alpine.data('cart', () => ({ items: [], add() {}, remove() {} }))");
+
+    const full = new WorkspaceIndex();
+    full.indexDocument('file:///a.html', '<div x-data="{ open: false, toggle() {}, close() {} }">');
+    full.indexDocument('file:///b.js', "Alpine.data('cart', () => ({ items: [], add() {}, remove() {} }))");
+    full.indexDocument('file:///c.js', "Alpine.store('ui', { theme: 'dark' })");
+
+    assert.deepStrictEqual(inc.allNames().sort(), full.allNames().sort(),
+      'nameIndex names must match');
+    assert.deepStrictEqual(inc.allDataNames().sort(), full.allDataNames().sort(),
+      'dataRegistrations names must match');
+    assert.deepStrictEqual(inc.allStoreNames().sort(), full.allStoreNames().sort(),
+      'storeRegistrations names must match');
+    for (const name of full.allNames()) {
+      assert.strictEqual(inc.lookup(name).length, full.lookup(name).length,
+        `name ${name} entry count mismatch`);
+    }
+    for (const name of full.allDataNames()) {
+      assert.strictEqual(inc.lookupAlpineData(name).length, full.lookupAlpineData(name).length,
+        `data ${name} entry count mismatch`);
+    }
+  });
+});
+
+// ── workspace: indexDocument with precomputed attrs ─────────
+
+suite('workspace: indexDocument with precomputed attrs', () => {
+  test('precomputed attrs produce same defs as internal extractAlpineAttrs', () => {
+    const ws1 = new WorkspaceIndex();
+    const ws2 = new WorkspaceIndex();
+    const html = '<div x-data="{ open: false, toggle() {} }">';
+    ws1.indexDocument('file:///a.html', html);
+    const attrs = extractAlpineAttrs(html);
+    ws2.indexDocument('file:///a.html', html, attrs);
+    assert.deepStrictEqual(
+      ws1.lookup('open')[0],
+      ws2.lookup('open')[0],
+      'open def must be identical with/without precomputed attrs',
+    );
+    assert.deepStrictEqual(
+      ws1.lookup('toggle')[0],
+      ws2.lookup('toggle')[0],
+      'toggle def must be identical with/without precomputed attrs',
+    );
+  });
+
+  test('undefined attrs falls back to internal extractAlpineAttrs', () => {
+    const ws = new WorkspaceIndex();
+    const html = '<div x-data="{ count: 0 }">';
+    ws.indexDocument('file:///a.html', html, undefined);
+    assert.ok(ws.lookup('count').length > 0, 'fallback must index count');
+  });
+
+  test('empty attrs [] still indexes Alpine.data/store registrations', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.js',
+      "Alpine.data('cart', () => ({ items: [] }))", []);
+    assert.ok(ws.allDataNames().includes('cart'), 'Alpine.data still indexed with [] attrs');
+    assert.strictEqual(ws.lookup('items').length, 1, 'registration member indexed');
+    assert.strictEqual(ws.lookup('nonexistent').length, 0);
+  });
+
+  test('precomputed attrs for Alpine.store registration matches no-attrs path', () => {
+    const ws1 = new WorkspaceIndex();
+    const ws2 = new WorkspaceIndex();
+    const js = "Alpine.store('ui', { theme: 'dark' })";
+    ws1.indexDocument('file:///a.js', js);
+    const attrs = extractAlpineAttrs(js);
+    ws2.indexDocument('file:///a.js', js, attrs);
+    assert.deepStrictEqual(
+      ws1.lookupAlpineStore('ui')[0].def,
+      ws2.lookupAlpineStore('ui')[0].def,
+      'store def identical with/without precomputed attrs',
+    );
+  });
+});
+
 // ── Summary ─────────────────────────────────────────────────
 
-console.log(`\n${'='.repeat(50)}`);
-console.log(`Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`);
-if (failed > 0) process.exit(1);
+async function runAsync() {
+  for (const t of asyncTests) {
+    try {
+      await t.fn();
+      passed++;
+      console.log(`  ✓ ${t.name}`);
+    } catch (e) {
+      failed++;
+      console.log(`  ✗ ${t.name}`);
+      console.log(`    ${e.message}`);
+    }
+  }
+}
+
+async function main() {
+  if (asyncTests.length > 0) {
+    await runAsync();
+  }
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`);
+  if (failed > 0) process.exit(1);
+}
+
+main();

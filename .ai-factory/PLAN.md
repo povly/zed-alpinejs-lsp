@@ -1,8 +1,8 @@
-# План: Полнота базы директив
+# План: Инкрементальная индексация воркспейса
 
 **Ветка:** main (без веток — `git.create_branches: false`)
 **Создан:** 2026-08-09
-**Milestone:** Полнота базы директив (ROADMAP.md, Стабилизация)
+**Milestone:** Инкрементальная индексация воркспейса (ROADMAP.md, Стабилизация)
 
 ## Original Request
 
@@ -10,122 +10,146 @@ roadmap
 
 ## Roadmap Linkage
 
-**Milestone:** "Полнота базы директив"
-**Rationale:** Синхронизация базы данных LSP (DIRECTIVES, MODIFIERS) с Alpine 3.x. Текущая база неполна: не хватает `x-id` directive, `x-transition:*` sub-attributes, behavior modifiers (`.self`, `.capture`, `.passive`, `.trim`, `.boolean`), и examples у большинства директив. Цель — hover и completion отражают актуальный Alpine 3.x API.
+**Milestone:** "Инкрементальная индексация воркспейса"
+**Rationale:** Текущая архитектура выполняет полную перестройку `rebuildIndexes()` (O(F×D), где F=файлов, D=определений) на каждое нажатие клавиши через `onDidChangeContent` → `indexDocument()` → `rebuildIndexes()`. Для воркспейсов с 50+ файлами это вызывает лаги. Решение: debounce + инкрементальное обновление + устранение дублирующего парсинга.
 
 ## Settings
 
-- **Testing:** yes — регрессионные тесты для каждой новой записи (правило parsing.md)
-- **Logging:** verbose
-- **Docs:** no — warn-only (данные в data.ts, docs/features.md уже описывает возможности)
+- **Testing:** yes — регрессионные тесты для debounce timing и корректности инкрементального обновления
+- **Logging:** verbose — метрики времени индексации, debounced events
+- **Docs:** no — warn-only (внутреннее изменение архитектуры, docs/features.md уже описывает indexer)
 
 ## Анализ
 
-### Текущее состояние (из audit)
-- **DIRECTIVES:** 17 записей, `x-modelable` уже присутствует. **Не хватает:** `x-id`. **12 из 17** без `example` поля.
-- **MODIFIERS:** 10 записей. Не хватает behavior modifiers для x-on (`.self`, `.capture`, `.passive`, `.camel`), x-model (`.trim`, `.boolean`, `.fill`), x-show (`.important`, `.immediate`).
-- **x-transition:** только базовая запись. Sub-attributes (`:enter`, `:enter-start`, `:enter-end`, `:leave`, `:leave-start`, `:leave-end`) не документированы. `resolveDirectiveBase` срезает `:enter` → показывает generic `x-transition` hover.
-- **Ключевые модификаторы** (`.enter`, `.escape`, `.tab` и т.д.) — НЕ добавляем: их 30+, они self-explanatory, и замусорят completion list.
+### Текущая архитектура (из audit)
 
-### Источник
-Alpine 3.x source code: `packages/alpinejs/src/directives/index.js`, `utils/on.js`, `x-model.js`, `x-show.js` (commit `bc956c22`).
+**Per-keystroke call chain:**
+```
+onDidChangeContent [server.ts:36]
+  → extractAlpineAttrs(text) → attrCache           — O(T), regex
+  → workspace.indexDocument(uri, text) [workspace.ts:55]
+    → extractDefinitions(uri, text) [workspace.ts:176]
+      → extractAlpineAttrs(text)                    — O(T) AGAIN (duplicate!)
+      → extractAlpineData(text)                     — O(T)
+      → extractAlpineStore(text)                    — O(T)
+      → parseXData() per match                      — O(M)
+    → rebuildIndexes() [workspace.ts:228]
+      → Clears nameIndex, dataRegistrations, storeRegistrations
+      → For EACH file in fileDefs:                  — O(F)
+        → For EACH def in file:                     — O(D)
+          → Insert into 3 maps
+```
+
+**Worst case per keystroke:** O(T + F×D) — недопустимо для больших воркспейсов
+
+**Дополнительная проблема:** `extractAlpineAttrs` вызывается дважды — в server.ts:38 (для attrCache) и в workspace.ts:180 (для extractDefinitions). Один и тот же regex по тому же тексту.
+
+### Структуры данных (workspace.ts)
+```ts
+private fileDefs = new Map<string, WorkspaceDef[]>();        // uri → defs
+private fileTexts = new Map<string, string>();                // uri → text
+private nameIndex = new Map<string, WorkspaceDef[]>();        // name → defs (derived)
+private dataRegistrations = new Map<string, {def,text}[]>();  // Alpine.data name (derived)
+private storeRegistrations = new Map<string, {def,text}[]>(); // Alpine.store name (derived)
+```
+`nameIndex`, `dataRegistrations`, `storeRegistrations` — **derived maps**, полностью перестраиваются при каждом `rebuildIndexes()`.
 
 ## Задачи
 
-### Task 1: DIRECTIVES — добавить `x-id` + examples для существующих
-- [x] **Файл:** `server/src/data.ts`
+### Task 1: Debounce в onDidChangeContent
+- [x] **Файл:** `server/src/server.ts`
 - [x] **Изменения:**
-  - Добавить запись `x-id` в DIRECTIVES:
-    - `name: 'x-id'`
-    - `documentation: 'Declares a scope for $id() unique ID generation.'`
-    - `example: 'x-id="user"'`
-  - Добавить `example` поле директивам где его нет (12 штук). Примеры из Alpine docs:
-    - `x-init`: `x-init="init()"` (вызов функции)
-    - `x-show`: `x-show="open"`
-    - `x-model`: `x-model="name"`
-    - `x-text`: `x-text="message"`
-    - `x-html`: `x-html="<strong>bold</strong>"`
-    - `x-ref`: `x-ref="button"`
-    - `x-if`: `x-if="show"` (на `<template>`)
-    - `x-for`: `x-for="item in items"` (на `<template>`)
-    - `x-effect`: `x-effect="update()"`
-    - `x-transition`: `x-show="open" x-transition`
-    - `x-cloak`: `x-cloak` (без значения)
-    - `x-teleport`: `x-teleport="#modal-container"`
-    - `x-ignore`: `x-ignore`
-  - **НЕ менять** существующие example поля (x-data, x-bind, x-on)
-- [x] **Тесты** (`test/test.js`, suite `'data: DIRECTIVES completeness'`):
-  - `DIRECTIVES.find(d => d.name === 'x-id')` существует и имеет documentation + example
-  - Все 17+1=18 директив имеют documentation (непустая строка)
-  - Минимум 15 из 18 имеют example (непустая строка)
-  - `resolveDirectiveBase('x-id')` → `'x-id'` (verify в extractor test suite)
-  - Hover тест: hover на `x-id` в `<div x-id="user">` показывает documentation
-
-### Task 2: x-transition sub-attributes для hover
-- [x] **Файлы:** `server/src/data.ts`, `server/src/server.ts`
-- [x] **Изменения:**
-  - В `data.ts` добавить `TRANSITION_SUBS` массив (6 записей):
+  - Добавить debounce timer поле в `AlpineLanguageServer`: `private debounceTimer: ReturnType<typeof setTimeout> | null = null;`
+  - В `onDidChangeContent` разделить логику:
+    1. **Eager (немедленно):** `extractAlpineAttrs(text)` → `attrCache.set()` — нужно для мгновенного completion
+    2. **Debounced (300ms):** `workspace.indexDocument()` — отложенное обновление индекса
+  - Реализация debounce:
     ```ts
-    export interface TransitionSubAttr { name: string; documentation: string; }
-    export const TRANSITION_SUBS: TransitionSubAttr[] = [
-      { name: ':enter', documentation: 'CSS classes applied during the entire entering phase.' },
-      { name: ':enter-start', documentation: 'Added before element is inserted, removed one animation frame after.' },
-      { name: ':enter-end', documentation: 'Added one frame after insertion, removed when transition finishes.' },
-      { name: ':leave', documentation: 'CSS classes applied during the entire leaving phase.' },
-      { name: ':leave-start', documentation: 'Added immediately on leave trigger, removed after one frame.' },
-      { name: ':leave-end', documentation: 'Added one frame after leave trigger, removed when transition finishes.' },
-    ];
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.workspace.indexDocument(document.uri, document.getText());
+      this.connection.console.info(`onDidChangeContent: workspace indexed (debounced) for ${document.uri}`);
+    }, 300);
     ```
-  - В `server.ts` (onHover name-region block): **перед** fallback на `resolveDirectiveBase`, проверить full colon-qualified имя:
-    1. Если `attr.name` начинается с `x-transition:` → извлечь sub-attr часть (`:enter`, `:enter-start` и т.д.)
-    2. Найти в `TRANSITION_SUBS` по имени
-    3. Если найдено → вернуть hover `{contents: ['x-transition' + sub.name, sub.documentation + '\n\nSee: x-transition']}`
-    4. Если не найдено → fall through к существующему `resolveDirectiveBase` → показывает generic `x-transition` hover
-  - **ВАЖНО:** не ломать существующий hover на base `x-transition` (без sub-attr) — должен показывать generic документацию
-- [x] **Тесты** (suite `'onHover: x-transition sub-attributes'`):
-  - Hover на `x-transition:enter` → показывает "CSS classes applied during the entire entering phase."
-  - Hover на `x-transition:leave-start` → показывает "Added immediately on leave trigger..."
-  - Hover на `x-transition` (без sub-attr) → показывает generic "Adds enter/leave CSS transitions." (не сломан)
-  - Hover на `x-transition:unknown` → fall through к generic x-transition hover (не null)
+  - Уничтожать timer в `onShutdown()` или при закрытии connection (если есть такой handler)
+  - **ВАЖНО:** attrCache обновляется мгновенно (для completion без lag). Только workspace indexing дебаунсится
+- [x] **Тесты** (`test/test.js`, suite `'server: debounce onDidChangeContent'`):
+  - После изменения документа attrCache обновляется немедленно (0ms)
+  - workspace.indexDocument НЕ вызывается немедленно — только после debounce delay
+  - При быстром вводе (3 изменения за 100ms) indexDocument вызывается 1 раз (не 3) после последнего изменения + 300ms
+  - Использовать fake timers или async/await с setTimeout в тестах
 
-### Task 3: MODIFIERS — добавить недостающие behavior modifiers
-- [x] **Файл:** `server/src/data.ts`
+### Task 2: Инкрементальное обновление индекса в workspace.ts
+- [x] **Файл:** `server/src/workspace.ts`
 - [x] **Изменения:**
-  - Добавить в MODIFIERS (9 новых записей):
-    - x-on behavior: `{name:'.self', for:['x-on'], documentation:'Only trigger if event.target is the element itself (not a child).'}` 
-    - `{name:'.capture', for:['x-on'], documentation:'Listen during capture phase (before bubbling).'}` 
-    - `{name:'.passive', for:['x-on'], documentation:'Mark listener as passive for performance (cannot call preventDefault).'}` 
-    - `{name:'.camel', for:['x-on'], documentation:'Convert event name from kebab-case to camelCase (e.g. custom-event → customEvent).'}` 
-    - x-model: `{name:'.trim', for:['x-model'], documentation:'Trim whitespace from the input value.'}` 
-    - `{name:'.boolean', for:['x-model'], documentation:'Coerce value to a JS boolean (accepts true/false/1/0).'}` 
-    - `{name:'.fill', for:['x-model'], documentation:'Populate empty bound property from element\'s value attribute.'}` 
-    - x-show: `{name:'.important', for:['x-show'], documentation:'Set display:none !important instead of display:none.'}` 
-    - `{name:'.immediate', for:['x-show'], documentation:'Show/hide immediately without transition animation.'}` 
-  - Итого MODIFIERS: 10 + 9 = 19 записей
-- [x] **Тесты** (расширить suite `'onCompletion: modifiers'` и `'onHover: directives and modifiers'`):
-  - Completion: `<button x-on:click.|` теперь содержит `.self`, `.capture`, `.passive`, `.camel` (в дополнение к существующим 8)
-  - Completion: `<input x-model.|` теперь содержит `.trim`, `.boolean`, `.fill` (в дополнение к 4)
-  - Completion: `<div x-show.|` содержит `.important`, `.immediate` (новые для x-show)
-  - Hover: hover на `.self` в `x-on:click.self` → показывает "Only trigger if event.target is the element itself"
-  - Hover: hover на `.trim` в `x-model.trim` → показывает "Trim whitespace from the input value."
-  - Hover: hover на `.important` в `x-show.important` → показывает "Set display:none !important"
+  - Добавить приватный метод `updateIndexesForUri(uri: string, oldDefs: WorkspaceDef[], newDefs: WorkspaceDef[]): void`:
+    1. Для каждого `oldDef` в `oldDefs`:
+       - Найти запись в `nameIndex.get(oldDef.name)`, удалить oldDef из массива. Если массив пуст → delete key
+       - Если `oldDef.registrationKind === 'Alpine.data'` → аналогично из `dataRegistrations`
+       - Если `oldDef.registrationKind === 'Alpine.store'` → аналогично из `storeRegistrations`
+    2. Для каждого `newDef` в `newDefs`:
+       - Добавить в `nameIndex` (создать массив если ключа нет)
+       - Добавить в `dataRegistrations` / `storeRegistrations` по необходимости
+  - Изменить `indexDocument()`:
+    ```ts
+    indexDocument(uri: string, text: string): void {
+      const oldDefs = this.fileDefs.get(uri) ?? [];
+      this.fileTexts.set(uri, text);
+      const newDefs = this.extractDefinitions(uri, text);
+      this.fileDefs.set(uri, newDefs);
+      this.updateIndexesForUri(uri, oldDefs, newDefs);  // вместо rebuildIndexes()
+    }
+    ```
+  - **НЕ удалять `rebuildIndexes()`** — оставить для `scanWorkspace()` (полная перестройка при старте)
+  - Сложность: O(D_uri) вместо O(F×D) — обрабатываются только определения одного файла
+- [x] **Тесты** (suite `'workspace: incremental index update'`):
+  - Индексировать 2 файла, затем обновить 1 файл → nameIndex содержит только актуальные определения
+  - Удалить все определения из файла (пустой x-data) → старые записи исчезают из nameIndex
+  - Изменить имя метода в файле → старое имя исчезает из nameIndex, новое появляется
+  - Добавить новый Alpine.data в файл → появляется в dataRegistrations
+  - Сравнить результат `updateIndexesForUri` с результатом `rebuildIndexes()` — должны быть идентичны
+
+### Task 3: Устранить дублирующий extractAlpineAttrs
+- [x] **Файлы:** `server/src/server.ts`, `server/src/workspace.ts`
+- [x] **Изменения:**
+  - В `workspace.ts` добавить опциональный параметр:
+    ```ts
+    indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void {
+      // ...
+      const attrs = precomputedAttrs ?? extractAlpineAttrs(text);
+      // использовать attrs вместо внутреннего вызова
+    }
+    ```
+  - В `extractDefinitions` тоже принять опциональный `precomputedAttrs?` параметр, использовать его вместо `extractAlpineAttrs(text)` вызова (строка ~180)
+  - В `server.ts` `onDidChangeContent` (внутри debounced callback):
+    ```ts
+    const attrs = this.attrCache.get(document.uri);
+    this.workspace.indexDocument(document.uri, document.getText(), attrs);
+    ```
+  - **ВАЖНО:** `attrs` из attrCache могут быть stale (если документ изменился после eager update но до debounced callback). Решение: передавать `document.getText()` как `text`, и если attrs !== undefined, использовать их. Если attrs undefined (cache miss), workspace.ts вызовет extractAlpineAttrs сам. В нормальном потоке attrs всегда в кэше (eager update происходит раньше debounce)
+- [x] **Тесты** (suite `'workspace: indexDocument with precomputed attrs'`):
+  - `indexDocument(uri, text, attrs)` даёт тот же результат что `indexDocument(uri, text)` без attrs
+  - `indexDocument(uri, text, undefined)` работает (fallback на внутренний extractAlpineAttrs)
+  - `indexDocument(uri, text, [])` — пустой attrs, fallback или empty defs
 
 ## Commit Plan
 
 3 задачи (< 5) — единый коммит:
 ```
-feat(data): sync directive and modifier database with Alpine 3.x
+perf(workspace): debounced incremental workspace indexing
 
-- Add x-id directive, enrich 12 directives with example fields
-- Add TRANSITION_SUBS for x-transition:enter/leave sub-attribute hover
-- Add 9 missing modifiers: .self/.capture/.passive/.camel (x-on),
-  .trim/.boolean/.fill (x-model), .important/.immediate (x-show)
-- Regression tests for all new entries
+- Debounce workspace.indexDocument() by 300ms in onDidChangeContent;
+  attrCache still updates eagerly for instant completion
+- Replace full rebuildIndexes() with per-URI incremental update:
+  remove old defs + insert new defs for changed file only (O(D_uri) vs O(F*D))
+- Pass precomputed attrs from attrCache to indexDocument() to eliminate
+  redundant extractAlpineAttrs regex pass
+- Regression tests for debounce timing, incremental correctness, attrs reuse
 ```
 
 ## Проверка выполнения
 
 - [x] `cd server && npm run build` — без ошибок TypeScript
-- [x] `node test/test.js` — 140 тестов (124 существующих + 16 новых), 0 failed
-- [x] Существующие completion/hover тесты не сломаны (regression)
+- [x] `node test/test.js` — 156 тестов (140 существующих + 16 новых), 0 failed
+- [x] Существующие completion/hover/definition тесты не сломаны (regression)
 - [x] ROADMAP.md milestone отмечен `[x]`, добавлен в Completed таблицу
