@@ -7,7 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { extractAlpineAttrs, findAttrAtOffset, isAlpineAttr } = require('../server/dist/extractor');
+const { extractAlpineAttrs, findAttrAtOffset, isAlpineAttr, matchBraces } = require('../server/dist/extractor');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { createTestServer, loadDocument, DEBUG } = require('./helpers');
@@ -146,6 +146,47 @@ suite('findAttrAtOffset', () => {
   });
 });
 
+// ── matchBraces edge-cases ─────────────────────────────────
+
+suite('matchBraces edge-cases', () => {
+  test('block comment with fake close brace does not break depth', () => {
+    const text = '{ /* } fake close */ open: false }';
+    const result = matchBraces(text, 0);
+    assert.ok(result !== null, 'should find closing brace');
+    assert.strictEqual(text[result], '}', 'must be the real closing brace');
+    assert.ok(result > text.indexOf('fake'), 'closing brace must be after the comment');
+  });
+
+  test('template interpolation ${expr} does not break depth', () => {
+    const text = '{ msg: `text ${expr}` }';
+    const result = matchBraces(text, 0);
+    assert.ok(result !== null, 'should find closing brace');
+    assert.strictEqual(text[result], '}', 'must be the real closing brace');
+    assert.strictEqual(result, text.length - 1, 'closing brace at end');
+  });
+
+  test('block comment opener inside string is NOT treated as comment', () => {
+    const text = '{ a: "/* not comment */", b: 2 }';
+    const result = matchBraces(text, 0);
+    assert.ok(result !== null, 'should find closing brace');
+    assert.strictEqual(text[result], '}', 'must be the real closing brace');
+    assert.strictEqual(result, text.length - 1, 'closing brace at end');
+  });
+
+  test('nested objects with block comment between them', () => {
+    const text = '{ a: 1, /* comment */ b: { c: 2 } }';
+    const result = matchBraces(text, 0);
+    assert.ok(result !== null);
+    assert.strictEqual(text[result], '}');
+  });
+
+  test('unclosed block comment returns null', () => {
+    const text = '{ /* never closed, open: false }';
+    const result = matchBraces(text, 0);
+    assert.strictEqual(result, null, 'unclosed comment → unbalanced → null');
+  });
+});
+
 // ── parseXData ──────────────────────────────────────────────
 
 suite('parseXData', () => {
@@ -221,6 +262,93 @@ suite('parseXData', () => {
     const open = members.find(m => m.name === 'open');
     assert.ok(open);
     assert.strictEqual(value.slice(open.offset, open.offset + open.length), 'open');
+  });
+});
+
+// ── parseXData edge-cases: spread ──────────────────────────
+
+suite('parseXData edge-cases: spread', () => {
+  test('{ ...defaults, override: true } — defaults NOT a member', () => {
+    const members = parseXData('{ ...defaults, override: true }');
+    const names = members.map(m => m.name);
+    assert.ok(!names.includes('defaults'), 'spread target must NOT be a member');
+    assert.ok(names.includes('override'));
+  });
+
+  test('{...config} — spread-only, config NOT a member', () => {
+    const members = parseXData('{...config}');
+    const names = members.map(m => m.name);
+    assert.ok(!names.includes('config'), 'spread target must NOT be a member');
+  });
+
+  test('{ a: 1, ...b, c: 2 } — b excluded, a and c included', () => {
+    const members = parseXData('{ a: 1, ...b, c: 2 }');
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('a'));
+    assert.ok(names.includes('c'));
+    assert.ok(!names.includes('b'), 'spread target must NOT be a member');
+  });
+});
+
+// ── parseXData edge-cases: computed keys ───────────────────
+
+suite('parseXData edge-cases: computed keys', () => {
+  test('{ [Symbol.iterator]: fn, open: false } — computed key excluded', () => {
+    const members = parseXData('{ [Symbol.iterator]: fn, open: false }');
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('open'));
+    assert.ok(!names.includes('Symbol'));
+    assert.ok(!names.includes('iterator'));
+  });
+
+  test("{ ['dynamic-' + key]: value, name: 'test' } — computed key excluded", () => {
+    const members = parseXData("{ ['dynamic-' + key]: value, name: 'test' }");
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('name'));
+    assert.ok(!names.includes('dynamic'));
+    assert.ok(!names.includes('key'));
+  });
+
+  test("{ [0]: 'first', items: [] } — numeric computed key excluded", () => {
+    const members = parseXData("{ [0]: 'first', items: [] }");
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('items'));
+    assert.ok(!names.includes('0'));
+  });
+});
+
+// ── parseXData edge-cases: strings ─────────────────────────
+
+suite('parseXData edge-cases: strings', () => {
+  test("{ msg: 'hello, world}', open: false } — world inside string excluded", () => {
+    const members = parseXData("{ msg: 'hello, world}', open: false }");
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('open'));
+    assert.ok(!names.includes('world'), 'world is inside a string, must NOT be a member');
+  });
+
+  test('{ a: "foo, bar}", b: 1 } — foo/bar inside string excluded', () => {
+    const members = parseXData('{ a: "foo, bar}", b: 1 }');
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('a'));
+    assert.ok(names.includes('b'));
+    assert.ok(!names.includes('foo'));
+    assert.ok(!names.includes('bar'));
+  });
+
+  test('backtick template literal contents excluded', () => {
+    const members = parseXData('{ tpl: `template, end`}');
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('tpl'));
+    assert.ok(!names.includes('template'));
+    assert.ok(!names.includes('end'));
+  });
+
+  test('escaped quote inside string does not break detection', () => {
+    const members = parseXData("{ msg: 'it\\'s, fine}', open: true }");
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('open'));
+    assert.ok(!names.includes('fine'));
   });
 });
 

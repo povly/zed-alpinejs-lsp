@@ -19,6 +19,25 @@ function isValidMemberName(name: string): boolean {
   return true;
 }
 
+/** Pure scan: returns true if `offset` falls inside a string literal. */
+function isInsideString(text: string, offset: number): boolean {
+  let inString = false;
+  let stringChar = '';
+  for (let i = 0; i < offset; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') { i++; continue; } // skip escaped char
+      if (ch === stringChar) inString = false;
+    } else {
+      if (ch === '"' || ch === "'" || ch === '`') {
+        inString = true;
+        stringChar = ch;
+      }
+    }
+  }
+  return inString;
+}
+
 export function parseXData(value: string): XDataMember[] {
   const members: XDataMember[] = [];
   const seen = new Set<string>();
@@ -46,6 +65,9 @@ export function parseXData(value: string): XDataMember[] {
   while ((match = propRegex.exec(value)) !== null) {
     const name = match[1];
     if (!isValidMemberName(name) || seen.has(name)) continue;
+    // Skip computed key context: [expr] or member.access
+    const charBefore = value[match.index - 1] ?? '';
+    if (charBefore === '[' || charBefore === '.') continue;
     members.push({
       name,
       kind: 'property',
@@ -61,9 +83,10 @@ export function parseXData(value: string): XDataMember[] {
   while ((match = shortRegex.exec(value)) !== null) {
     const name = match[1];
     if (!isValidMemberName(name) || seen.has(name)) continue;
-    // Avoid matching inside strings — quick heuristic
-    const charBefore = value[match.index - 1] ?? '';
-    if (charBefore === '"' || charBefore === "'") continue;
+    // Skip spread targets: { ...x, }
+    if (value.slice(match.index - 3, match.index) === '...') continue;
+    // Skip matches inside string literals (single/double/backtick)
+    if (isInsideString(value, match.index)) continue;
     members.push({
       name,
       kind: 'property',

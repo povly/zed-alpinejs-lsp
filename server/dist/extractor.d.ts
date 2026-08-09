@@ -19,7 +19,8 @@ export interface AlpineRegistration {
 }
 /**
  * Match a balanced `{ … }` block starting at `openBraceOffset`.
- * Handles nested objects, strings (single/double/backtick), and escapes.
+ * Handles nested objects, strings (single/double/backtick), escapes,
+ * line comments (//), block comments (/* *\/), and template interpolation (${...}).
  * Returns the offset of the closing `}`, or `null` if unbalanced.
  */
 export declare function matchBraces(text: string, openBraceOffset: number): number | null;

@@ -50,7 +50,8 @@ function findAttrAtOffset(attrs, offset) {
 }
 /**
  * Match a balanced `{ … }` block starting at `openBraceOffset`.
- * Handles nested objects, strings (single/double/backtick), and escapes.
+ * Handles nested objects, strings (single/double/backtick), escapes,
+ * line comments (//), block comments (/* *\/), and template interpolation (${...}).
  * Returns the offset of the closing `}`, or `null` if unbalanced.
  */
 function matchBraces(text, openBraceOffset) {
@@ -65,6 +66,38 @@ function matchBraces(text, openBraceOffset) {
                 i += 2;
                 continue;
             }
+            if (stringChar === '`' && ch === '$' && text[i + 1] === '{') {
+                // Template interpolation: scan to matching } of ${...}
+                i += 2;
+                let interpDepth = 1;
+                let interpInString = false;
+                let interpStringChar = '';
+                while (i < text.length && interpDepth > 0) {
+                    const ic = text[i];
+                    if (interpInString) {
+                        if (ic === '\\') {
+                            i += 2;
+                            continue;
+                        }
+                        if (ic === interpStringChar)
+                            interpInString = false;
+                    }
+                    else {
+                        if (ic === '"' || ic === "'" || ic === '`') {
+                            interpInString = true;
+                            interpStringChar = ic;
+                        }
+                        else if (ic === '{') {
+                            interpDepth++;
+                        }
+                        else if (ic === '}') {
+                            interpDepth--;
+                        }
+                    }
+                    i++;
+                }
+                continue;
+            }
             if (ch === stringChar)
                 inString = false;
         }
@@ -77,6 +110,14 @@ function matchBraces(text, openBraceOffset) {
                 // line comment — skip to end of line
                 while (i < text.length && text[i] !== '\n')
                     i++;
+                continue;
+            }
+            else if (ch === '/' && text[i + 1] === '*') {
+                // block comment — skip to */
+                i += 2;
+                while (i < text.length && !(text[i] === '*' && text[i + 1] === '/'))
+                    i++;
+                i += 2;
                 continue;
             }
             else if (ch === '{') {

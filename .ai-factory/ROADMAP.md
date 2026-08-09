@@ -8,7 +8,7 @@
 
 - [x] **Core LSP MVP** — hover, go-to-definition, completion, workspace indexer, Blade-толерантность (v0.1.0)
 - [x] **Расширение тестового покрытия** — unit-тесты для server.ts (LSP-обработчики) и workspace.ts (индексатор); test-харнес для интеграционных тестов LSP запрос→ответ. Сейчас покрыты только extractor + xdata
-- [ ] **Робастность парсера** — edge-cases: spread `{...x}`, computed keys `[expr]:`, false-positives shorthand-regex в строках. Каждый кейс → регрессионный тест (правило parsing.md)
+- [x] **Робастность парсера** — edge-cases: spread `{...x}`, computed keys `[expr]:`, false-positives shorthand-regex в строках. Каждый кейс → регрессионный тест (правило parsing.md)
 - [ ] **Подключение модификаторов** — MODIFIERS (10 записей в data.ts) уже есть, но не wired к completion/hover. Добавить триггер `.` после директивы + hover для `.stop`, `.prevent`, `.debounce` и др.
 - [ ] **Полнота базы директив** — синхронизация с Alpine 3.x: добавить `x-modelable`, под-атрибуты `x-transition:*`, документация для комбинаций `x-on.debounce`, `x-model.lazy.number`
 - [ ] **Инкрементальная индексация воркспейса** — заменить полную перестройку `rebuildIndexes()` на каждое `onDidChangeContent` на debounced инкрементальное обновление только изменённого документа
@@ -33,3 +33,4 @@
 |-----------|------|
 | Core LSP MVP | 2026-08-09 |
 | Расширение тестового покрытия | 2026-08-09 |
+| Робастность парсера | 2026-08-09 |
