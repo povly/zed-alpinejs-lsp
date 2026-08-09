@@ -87,8 +87,8 @@ export interface AlpineRegistration {
   objectLiteral: string;
   /** Absolute offset of the first char inside the opening { */
   objectOffset: number;
-  /** Type label for display: "Alpine.data" or "Alpine.store" */
-  kind: 'Alpine.data' | 'Alpine.store';
+  /** Type label for display: "Alpine.data", "Alpine.store", or "Alpine.magic" */
+  kind: 'Alpine.data' | 'Alpine.store' | 'Alpine.magic';
 }
 
 /**
@@ -216,10 +216,17 @@ export function extractAlpineStore(text: string): AlpineRegistration[] {
   return extractRegistration(text, /\bAlpine\.store\s*\(\s*['"]([^'"]+)['"]/g, 'Alpine.store');
 }
 
+/**
+ * Extract all `Alpine.magic('name', () => ({ … }))` registrations.
+ */
+export function extractAlpineMagic(text: string): AlpineRegistration[] {
+  return extractRegistration(text, /\bAlpine\.magic\s*\(\s*['"]([^'"]+)['"]/g, 'Alpine.magic');
+}
+
 function extractRegistration(
   text: string,
   nameRegex: RegExp,
-  kind: 'Alpine.data' | 'Alpine.store',
+  kind: 'Alpine.data' | 'Alpine.store' | 'Alpine.magic',
 ): AlpineRegistration[] {
   const results: AlpineRegistration[] = [];
   nameRegex.lastIndex = 0;

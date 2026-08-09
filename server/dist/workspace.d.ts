@@ -8,7 +8,7 @@ export interface WorkspaceDef {
     length: number;
     sourceFile: string;
     registrationName?: string;
-    registrationKind?: 'Alpine.data' | 'Alpine.store';
+    registrationKind?: 'Alpine.data' | 'Alpine.store' | 'Alpine.magic';
 }
 export interface ResolvedScope {
     members: WorkspaceDef[];
@@ -28,6 +28,7 @@ export declare class WorkspaceIndex {
     private nameIndex;
     private dataRegistrations;
     private storeRegistrations;
+    private magicRegistrations;
     indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void;
     removeDocument(uri: string): void;
     getText(uri: string): string | undefined;
@@ -35,11 +36,16 @@ export declare class WorkspaceIndex {
     allNames(): string[];
     allDataNames(): string[];
     allStoreNames(): string[];
+    allMagicNames(): string[];
     lookupAlpineData(name: string): {
         def: WorkspaceDef;
         text: string;
     }[];
     lookupAlpineStore(name: string): {
+        def: WorkspaceDef;
+        text: string;
+    }[];
+    lookupAlpineMagic(name: string): {
         def: WorkspaceDef;
         text: string;
     }[];

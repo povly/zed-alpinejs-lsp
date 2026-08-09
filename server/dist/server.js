@@ -138,6 +138,47 @@ class AlpineLanguageServer {
             }
             return items;
         }
+        // Chain-aware completion: $store.NAME (store names) / $store.NAME. (members) / $magic. (members)
+        const storeMemberChainMatch = textBefore.match(/\$store\.(\w+)\.\w*$/);
+        if (storeMemberChainMatch) {
+            const storeName = storeMemberChainMatch[1];
+            const regs = this.workspace.lookupAlpineStore(storeName);
+            if (regs.length > 0) {
+                const members = this.workspace.getRegistrationMembers(regs[0].def, regs[0].text);
+                return members.map((m) => ({
+                    label: m.name,
+                    kind: m.kind === 'method' ? node_1.CompletionItemKind.Method : node_1.CompletionItemKind.Property,
+                    detail: `Alpine.store('${storeName}')`,
+                }));
+            }
+            return [];
+        }
+        const storeNameChainMatch = textBefore.match(/\$store\.(\w*)$/);
+        if (storeNameChainMatch) {
+            const prefix = storeNameChainMatch[1];
+            return this.workspace.allStoreNames()
+                .filter((n) => n.startsWith(prefix))
+                .map((name) => ({
+                label: name,
+                kind: node_1.CompletionItemKind.Module,
+                detail: 'Alpine.store',
+                documentation: `Store: ${name}`,
+            }));
+        }
+        const magicChainMatch = textBefore.match(/\$(\w+)\.\w*$/);
+        if (magicChainMatch && magicChainMatch[1] !== 'store') {
+            const magicName = magicChainMatch[1];
+            const regs = this.workspace.lookupAlpineMagic(magicName);
+            if (regs.length > 0) {
+                const members = this.workspace.getRegistrationMembers(regs[0].def, regs[0].text);
+                return members.map((m) => ({
+                    label: m.name,
+                    kind: m.kind === 'method' ? node_1.CompletionItemKind.Method : node_1.CompletionItemKind.Property,
+                    detail: `$${magicName}`,
+                }));
+            }
+            return [];
+        }
         if (/\.\w*$/.test(textBefore)) {
             for (const m of localMembers) {
                 items.push(this.memberToCompletion(m));
@@ -230,6 +271,43 @@ class AlpineLanguageServer {
                 ],
             };
         }
+        // Chain-aware hover: $store.NAME / $store.NAME.member / $magic.method()
+        const chain = getChainAtOffset(attr.value, offset - attr.valueOffset);
+        if (chain && chain.length >= 2 && chain[0] === '$store') {
+            const storeName = chain[1];
+            const regs = this.workspace.lookupAlpineStore(storeName);
+            if (regs.length > 0) {
+                const reg = regs[0];
+                if (chain.length === 2) {
+                    const members = this.workspace.getRegistrationMembers(reg.def, reg.text);
+                    const memberList = members
+                        .map((m) => (m.kind === 'method' ? `${m.name}()` : m.name))
+                        .join(', ');
+                    return {
+                        contents: [
+                            { language: 'typescript', value: `Alpine.store('${storeName}')` },
+                            `📍 ${reg.def.sourceFile} — ${members.length} members:\n${memberList}`,
+                        ],
+                    };
+                }
+                const wordInChain = chain[chain.length - 1];
+                const members = this.workspace.getRegistrationMembers(reg.def, reg.text);
+                const member = members.find((m) => m.name === wordInChain);
+                if (member)
+                    return this.formatHoverDef(member);
+            }
+        }
+        if (chain && chain.length >= 2 && chain[0].startsWith('$') && chain[0] !== '$store') {
+            const magicName = chain[0].slice(1);
+            const regs = this.workspace.lookupAlpineMagic(magicName);
+            if (regs.length > 0) {
+                const wordInChain = chain[chain.length - 1];
+                const members = this.workspace.getRegistrationMembers(regs[0].def, regs[0].text);
+                const member = members.find((m) => m.name === wordInChain);
+                if (member)
+                    return this.formatHoverDef(member);
+            }
+        }
         if ((0, extractor_1.isXData)(attr.name) && !attr.value.trim().startsWith('{')) {
             return this.hoverRegistrationName(attr.value.trim());
         }
@@ -281,6 +359,35 @@ class AlpineLanguageServer {
                 const resolved = this.workspace.resolveScope(xdataAttr.value, textDocument.uri);
                 if (resolved) {
                     const member = resolved.members.find((m) => m.name === word);
+                    if (member)
+                        return this.defToLocation(member);
+                }
+            }
+        }
+        // Chain-aware resolution: $store.NAME.member, $magic.method()
+        const chain = getChainAtOffset(attr.value, offset - attr.valueOffset);
+        if (chain && chain.length >= 2) {
+            if (chain[0] === '$store') {
+                const storeName = chain[1];
+                const regs = this.workspace.lookupAlpineStore(storeName);
+                if (regs.length > 0) {
+                    if (chain.length === 2) {
+                        return this.defToLocation(regs[0].def);
+                    }
+                    const wordInChain = chain[chain.length - 1];
+                    const members = this.workspace.getRegistrationMembers(regs[0].def, regs[0].text);
+                    const member = members.find((m) => m.name === wordInChain);
+                    if (member)
+                        return this.defToLocation(member);
+                }
+            }
+            if (chain[0].startsWith('$') && chain[0] !== '$store') {
+                const magicName = chain[0].slice(1);
+                const regs = this.workspace.lookupAlpineMagic(magicName);
+                if (regs.length > 0) {
+                    const wordInChain = chain[chain.length - 1];
+                    const members = this.workspace.getRegistrationMembers(regs[0].def, regs[0].text);
+                    const member = members.find((m) => m.name === wordInChain);
                     if (member)
                         return this.defToLocation(member);
                 }
@@ -442,5 +549,42 @@ function getWordAtOffset(text, offset) {
         end++;
     const word = text.slice(start, end);
     return word || null;
+}
+/**
+ * Walk backward from `offset` through dot-separated word segments.
+ * Returns the full chain only when the FIRST segment starts with "$".
+ *
+ *   "$store.catalogMenu.isOpen" @ "isOpen" → ["$store", "catalogMenu", "isOpen"]
+ *   "$modal.show"              @ "show"    → ["$modal", "show"]
+ *   "toggle()"                 @ "toggle"  → null  (no dot-chain, not $-prefixed)
+ */
+function getChainAtOffset(text, offset) {
+    if (offset < 0 || offset > text.length)
+        return null;
+    let wordStart = offset;
+    while (wordStart > 0 && /[\w$]/.test(text[wordStart - 1]))
+        wordStart--;
+    let wordEnd = offset;
+    while (wordEnd < text.length && /[\w$]/.test(text[wordEnd]))
+        wordEnd++;
+    if (wordEnd <= wordStart)
+        return null;
+    const segments = [text.slice(wordStart, wordEnd)];
+    let cursor = wordStart;
+    while (cursor > 0 && text[cursor - 1] === '.') {
+        const prevEnd = cursor - 1;
+        let prevStart = prevEnd;
+        while (prevStart > 0 && /[\w$]/.test(text[prevStart - 1]))
+            prevStart--;
+        if (prevStart >= prevEnd)
+            break;
+        segments.unshift(text.slice(prevStart, prevEnd));
+        cursor = prevStart;
+    }
+    if (segments.length === 0)
+        return null;
+    if (!segments[0].startsWith('$'))
+        return null;
+    return segments;
 }
 //# sourceMappingURL=server.js.map

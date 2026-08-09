@@ -7,7 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData } = require('../server/dist/extractor');
+const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData, extractAlpineMagic } = require('../server/dist/extractor');
 const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
@@ -2086,6 +2086,348 @@ suite('extractAlpineData: default param in object literal', () => {
     const scope = ws.resolveScope('blog()', 'file:///blog.js');
     assert.ok(scope, 'resolveScope must find scope for "blog()"');
     assert.ok(scope.members.some(m => m.name === 'showMore'), 'members must include showMore');
+  });
+});
+
+// ── Scope-aware $store/$magic chain resolution ──────────────
+
+suite('extractAlpineMagic', () => {
+  test("extracts Alpine.magic('modal', () => ({ show() {}, hide() {} }))", () => {
+    const js = "Alpine.magic('modal', () => ({ show() {}, hide() {} }))";
+    const regs = extractAlpineMagic(js);
+    assert.strictEqual(regs.length, 1);
+    assert.strictEqual(regs[0].registrationName, 'modal');
+    assert.strictEqual(regs[0].kind, 'Alpine.magic');
+    assert.ok(regs[0].objectLiteral.includes('show'));
+    assert.ok(regs[0].objectLiteral.includes('hide'));
+  });
+
+  test('extracts multiple Alpine.magic registrations', () => {
+    const js = `
+      Alpine.magic('modal', () => ({ show() {} }));
+      Alpine.magic('confirm', () => ({ ask() {} }));
+    `;
+    const regs = extractAlpineMagic(js);
+    assert.strictEqual(regs.length, 2);
+    const names = regs.map(r => r.registrationName);
+    assert.ok(names.includes('modal'));
+    assert.ok(names.includes('confirm'));
+  });
+
+  test("uses double quotes: Alpine.magic(\"tooltip\", () => ({}))", () => {
+    const js = 'Alpine.magic("tooltip", () => ({ open() {} }))';
+    const regs = extractAlpineMagic(js);
+    assert.strictEqual(regs.length, 1);
+    assert.strictEqual(regs[0].registrationName, 'tooltip');
+  });
+
+  test('does NOT extract Alpine.data or Alpine.store', () => {
+    const js = "Alpine.data('modal', () => ({})) Alpine.store('ui', {})";
+    const regs = extractAlpineMagic(js);
+    assert.strictEqual(regs.length, 0);
+  });
+
+  test('returns empty for text without Alpine.magic', () => {
+    assert.strictEqual(extractAlpineMagic('const x = 1').length, 0);
+    assert.strictEqual(extractAlpineMagic('').length, 0);
+  });
+});
+
+suite('WorkspaceIndex.lookupAlpineMagic', () => {
+  test("lookupAlpineMagic('modal') returns registration after indexDocument", () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///magic.js', "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const regs = ws.lookupAlpineMagic('modal');
+    assert.ok(regs.length > 0, 'should return one entry per member');
+    assert.strictEqual(regs[0].def.registrationName, 'modal');
+    assert.strictEqual(regs[0].def.registrationKind, 'Alpine.magic');
+  });
+
+  test('allMagicNames returns all registered magic names', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///a.js', "Alpine.magic('modal', () => ({ show() {} }))");
+    ws.indexDocument('file:///b.js', "Alpine.magic('confirm', () => ({ ask() {} }))");
+    const names = ws.allMagicNames();
+    assert.ok(names.includes('modal'));
+    assert.ok(names.includes('confirm'));
+  });
+
+  test('lookupAlpineMagic returns [] for unknown name', () => {
+    const ws = new WorkspaceIndex();
+    assert.deepStrictEqual(ws.lookupAlpineMagic('nope'), []);
+  });
+
+  test('getRegistrationMembers returns magic members', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///m.js', "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const regs = ws.lookupAlpineMagic('modal');
+    const members = ws.getRegistrationMembers(regs[0].def, regs[0].text);
+    const names = members.map(m => m.name);
+    assert.ok(names.includes('show'));
+    assert.ok(names.includes('hide'));
+  });
+
+  test('incremental update: removing Alpine.magic clears the registration', () => {
+    const ws = new WorkspaceIndex();
+    ws.indexDocument('file:///m.js', "Alpine.magic('modal', () => ({ show() {} }))");
+    assert.strictEqual(ws.allMagicNames().length, 1);
+    ws.indexDocument('file:///m.js', '// nothing');
+    assert.strictEqual(ws.allMagicNames().length, 0);
+    assert.strictEqual(ws.lookupAlpineMagic('modal').length, 0);
+  });
+});
+
+suite('$store/$magic chain: onDefinition', () => {
+  test('$store.catalogMenu.isOpen → returns catalogMenu store member, NOT modal', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js',
+      "Alpine.store('catalogMenu', () => ({ isOpen: false, toggle() {} }))");
+    loadDocument(server, 'file:///modal.js',
+      "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const html = '<div x-data="{}"><button @click="$store.catalogMenu.isOpen">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('isOpen') + 1;
+    const result = server['onDefinition']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(result, 'should resolve isOpen to a location');
+    const loc = Array.isArray(result) ? result[0] : result;
+    assert.strictEqual(loc.uri, 'file:///store.js', 'must point to store.js, not modal.js');
+  });
+
+  test('$store.catalogMenu (cursor on NAME) → returns store registration location', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js',
+      "Alpine.store('catalogMenu', () => ({ isOpen: false }))");
+    const html = '<div><button @click="$store.catalogMenu">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('catalogMenu') + 3;
+    const result = server['onDefinition']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(result);
+    const loc = Array.isArray(result) ? result[0] : result;
+    assert.strictEqual(loc.uri, 'file:///store.js');
+  });
+
+  test('$modal.show → returns modal magic member', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///magic.js',
+      "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const html = '<div><button @click="$modal.show()">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('show') + 1;
+    const result = server['onDefinition']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(result, 'should resolve show to magic registration');
+    const loc = Array.isArray(result) ? result[0] : result;
+    assert.strictEqual(loc.uri, 'file:///magic.js');
+  });
+
+  test('$modal.unknownMember → returns null (member not found)', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///magic.js',
+      "Alpine.magic('modal', () => ({ show() {} }))");
+    const html = '<div><button @click="$modal.unknownMember()">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('unknownMember') + 1;
+    const result = server['onDefinition']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.strictEqual(result, null);
+  });
+
+  test('bare word (no chain) still works — does not regress', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///lib.js', "Alpine.data('cart', () => ({ items: [] }))");
+    const html = '<div x-data="cart"><button @click="items">';
+    const doc = loadDocument(server, 'file:///use.html', html);
+    const cursorOffset = html.indexOf('items') + 1;
+    const result = server['onDefinition']({
+      textDocument: { uri: 'file:///use.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(result);
+    const loc = Array.isArray(result) ? result[0] : result;
+    assert.strictEqual(loc.uri, 'file:///lib.js');
+  });
+});
+
+suite('$store/$magic chain: onHover', () => {
+  test('$store.catalogMenu (hover on NAME) → shows store info with member list', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js',
+      "Alpine.store('catalogMenu', () => ({ isOpen: false, toggle() {} }))");
+    const html = '<div><button @click="$store.catalogMenu">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('catalogMenu') + 3;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.strictEqual(sig.language, 'typescript');
+    assert.ok(sig.value.includes("Alpine.store('catalogMenu')"));
+    const detail = hover.contents[1];
+    assert.ok(detail.includes('isOpen'), 'member list includes isOpen');
+    assert.ok(detail.includes('toggle'), 'member list includes toggle');
+  });
+
+  test('$store.catalogMenu.isOpen (hover on member) → shows member signature', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js',
+      "Alpine.store('catalogMenu', () => ({ isOpen: false }))");
+    const html = '<div><button @click="$store.catalogMenu.isOpen">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('isOpen') + 1;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.ok(sig.value.includes('isOpen'));
+  });
+
+  test('$modal.show (hover) → shows magic member signature', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///magic.js',
+      "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const html = '<div><button @click="$modal.show()">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('show') + 1;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    const sig = hover.contents[0];
+    assert.ok(sig.value.includes('show'));
+  });
+
+  test('hover on $store word itself → still shows magic property doc (no regression)', () => {
+    const { server } = createTestServer();
+    const html = '<div @click="$store">';
+    const doc = loadDocument(server, 'file:///h.html', html);
+    const cursorOffset = html.indexOf('$store') + 2;
+    const hover = server['onHover']({
+      textDocument: { uri: 'file:///h.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.ok(hover);
+    assert.ok(hover.contents[0].value.includes('$store'));
+  });
+});
+
+suite('$store/$magic chain: onCompletion', () => {
+  test('$store. → shows all registered store names', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///s1.js', "Alpine.store('catalogMenu', { a: 1 })");
+    loadDocument(server, 'file:///s2.js', "Alpine.store('ui', { theme: 'dark' })");
+    const html = '<div><button @click="$store.">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$store.') + '$store.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('catalogMenu'));
+    assert.ok(labels.includes('ui'));
+  });
+
+  test('$store.catal → filters store names by prefix', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///s1.js', "Alpine.store('catalogMenu', { a: 1 })");
+    loadDocument(server, 'file:///s2.js', "Alpine.store('ui', { theme: 'dark' })");
+    const html = '<div><button @click="$store.catal">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$store.catal') + '$store.catal'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('catalogMenu'));
+    assert.ok(!labels.includes('ui'), 'ui should be filtered out by prefix');
+  });
+
+  test('$store.catalogMenu. → shows catalogMenu members only', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///s1.js',
+      "Alpine.store('catalogMenu', () => ({ isOpen: false, toggle() {} }))");
+    loadDocument(server, 'file:///s2.js',
+      "Alpine.store('ui', { theme: 'dark' })");
+    const html = '<div><button @click="$store.catalogMenu.">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$store.catalogMenu.') + '$store.catalogMenu.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('isOpen'), 'catalogMenu member isOpen present');
+    assert.ok(labels.includes('toggle'), 'catalogMenu member toggle present');
+    assert.ok(!labels.includes('theme'), 'ui store member theme must NOT appear');
+  });
+
+  test('$modal. → shows modal magic members', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///magic.js',
+      "Alpine.magic('modal', () => ({ show() {}, hide() {} }))");
+    const html = '<div><button @click="$modal.">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$modal.') + '$modal.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('show'));
+    assert.ok(labels.includes('hide'));
+  });
+
+  test('$store. with no stores registered → returns []', () => {
+    const { server } = createTestServer();
+    const html = '<div><button @click="$store.">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$store.') + '$store.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.deepStrictEqual(items, []);
+  });
+
+  test('$magic. for unregistered magic → returns []', () => {
+    const { server } = createTestServer();
+    const html = '<div><button @click="$unknown.">';
+    const doc = loadDocument(server, 'file:///view.html', html);
+    const cursorOffset = html.indexOf('$unknown.') + '$unknown.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///view.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    assert.deepStrictEqual(items, []);
+  });
+
+  test('this. (non-chain) still returns scope members — no regression', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }"><button @click="this.">';
+    const doc = loadDocument(server, 'file:///c.html', html);
+    const cursorOffset = html.indexOf('this.') + 'this.'.length;
+    const items = server['onCompletion']({
+      textDocument: { uri: 'file:///c.html' },
+      position: doc.positionAt(cursorOffset),
+    });
+    const labels = items.map(i => i.label);
+    assert.ok(labels.includes('open'), 'scope members still returned for this.');
   });
 });
 

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { extractAlpineAttrs, isXData, extractAlpineData, extractAlpineStore, AlpineRegistration, AlpineAttr } from './extractor';
+import { extractAlpineAttrs, isXData, extractAlpineData, extractAlpineStore, extractAlpineMagic, AlpineRegistration, AlpineAttr } from './extractor';
 import { parseXData, XDataMember } from './xdata';
 
 export interface WorkspaceDef {
@@ -12,7 +12,7 @@ export interface WorkspaceDef {
   length: number;
   sourceFile: string;
   registrationName?: string;
-  registrationKind?: 'Alpine.data' | 'Alpine.store';
+  registrationKind?: 'Alpine.data' | 'Alpine.store' | 'Alpine.magic';
 }
 
 export interface ResolvedScope {
@@ -61,6 +61,7 @@ export class WorkspaceIndex {
   private nameIndex = new Map<string, WorkspaceDef[]>();
   private dataRegistrations = new Map<string, { def: WorkspaceDef; text: string }[]>();
   private storeRegistrations = new Map<string, { def: WorkspaceDef; text: string }[]>();
+  private magicRegistrations = new Map<string, { def: WorkspaceDef; text: string }[]>();
 
   indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void {
     const oldDefs = this.fileDefs.get(uri) ?? [];
@@ -96,12 +97,20 @@ export class WorkspaceIndex {
     return [...this.storeRegistrations.keys()];
   }
 
+  allMagicNames(): string[] {
+    return [...this.magicRegistrations.keys()];
+  }
+
   lookupAlpineData(name: string): { def: WorkspaceDef; text: string }[] {
     return this.dataRegistrations.get(name) ?? [];
   }
 
   lookupAlpineStore(name: string): { def: WorkspaceDef; text: string }[] {
     return this.storeRegistrations.get(name) ?? [];
+  }
+
+  lookupAlpineMagic(name: string): { def: WorkspaceDef; text: string }[] {
+    return this.magicRegistrations.get(name) ?? [];
   }
 
   resolveScope(xdataValue: string, currentUri: string): ResolvedScope | null {
@@ -233,6 +242,16 @@ export class WorkspaceIndex {
       }
     }
 
+    for (const reg of extractAlpineMagic(text)) {
+      for (const m of parseXData(reg.objectLiteral)) {
+        defs.push({
+          ...this.makeDef(m, `${reg.kind}('${reg.registrationName}')`, uri, reg.objectOffset + m.offset, file),
+          registrationName: reg.registrationName,
+          registrationKind: reg.kind,
+        });
+      }
+    }
+
     return defs;
   }
 
@@ -271,6 +290,9 @@ export class WorkspaceIndex {
       if (def.registrationKind === 'Alpine.store') {
         this.removeFromRegistrations(this.storeRegistrations, def);
       }
+      if (def.registrationKind === 'Alpine.magic') {
+        this.removeFromRegistrations(this.magicRegistrations, def);
+      }
     }
     for (const def of newDefs) {
       this.insertIntoNameIndex(def);
@@ -279,6 +301,9 @@ export class WorkspaceIndex {
       }
       if (def.registrationKind === 'Alpine.store') {
         this.insertIntoRegistrations(this.storeRegistrations, def, uri);
+      }
+      if (def.registrationKind === 'Alpine.magic') {
+        this.insertIntoRegistrations(this.magicRegistrations, def, uri);
       }
     }
   }
@@ -343,6 +368,7 @@ export class WorkspaceIndex {
     this.nameIndex.clear();
     this.dataRegistrations.clear();
     this.storeRegistrations.clear();
+    this.magicRegistrations.clear();
 
     for (const [uri, defs] of this.fileDefs) {
       const text = this.fileTexts.get(uri);
@@ -368,6 +394,14 @@ export class WorkspaceIndex {
             this.storeRegistrations.set(name, []);
           }
           this.storeRegistrations.get(name)!.push({ def, text });
+        }
+
+        if (def.registrationKind === 'Alpine.magic') {
+          const name = def.registrationName!;
+          if (!this.magicRegistrations.has(name)) {
+            this.magicRegistrations.set(name, []);
+          }
+          this.magicRegistrations.get(name)!.push({ def, text });
         }
       }
     }

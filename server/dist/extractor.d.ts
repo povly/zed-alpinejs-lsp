@@ -17,8 +17,8 @@ export interface AlpineRegistration {
     objectLiteral: string;
     /** Absolute offset of the first char inside the opening { */
     objectOffset: number;
-    /** Type label for display: "Alpine.data" or "Alpine.store" */
-    kind: 'Alpine.data' | 'Alpine.store';
+    /** Type label for display: "Alpine.data", "Alpine.store", or "Alpine.magic" */
+    kind: 'Alpine.data' | 'Alpine.store' | 'Alpine.magic';
 }
 /**
  * Match a balanced `{ … }` block starting at `openBraceOffset`.
@@ -39,6 +39,10 @@ export declare function extractAlpineData(text: string): AlpineRegistration[];
  * Extract all `Alpine.store('name', { … })` registrations.
  */
 export declare function extractAlpineStore(text: string): AlpineRegistration[];
+/**
+ * Extract all `Alpine.magic('name', () => ({ … }))` registrations.
+ */
+export declare function extractAlpineMagic(text: string): AlpineRegistration[];
 export declare function normalizeAttrName(name: string): string;
 export declare function isXData(name: string): boolean;
 export declare function resolveDirectiveBase(attrName: string): string | null;

@@ -69,6 +69,7 @@ class WorkspaceIndex {
     nameIndex = new Map();
     dataRegistrations = new Map();
     storeRegistrations = new Map();
+    magicRegistrations = new Map();
     indexDocument(uri, text, precomputedAttrs) {
         const oldDefs = this.fileDefs.get(uri) ?? [];
         this.fileTexts.set(uri, text);
@@ -96,11 +97,17 @@ class WorkspaceIndex {
     allStoreNames() {
         return [...this.storeRegistrations.keys()];
     }
+    allMagicNames() {
+        return [...this.magicRegistrations.keys()];
+    }
     lookupAlpineData(name) {
         return this.dataRegistrations.get(name) ?? [];
     }
     lookupAlpineStore(name) {
         return this.storeRegistrations.get(name) ?? [];
+    }
+    lookupAlpineMagic(name) {
+        return this.magicRegistrations.get(name) ?? [];
     }
     resolveScope(xdataValue, currentUri) {
         const trimmed = xdataValue.trim();
@@ -221,6 +228,15 @@ class WorkspaceIndex {
                 });
             }
         }
+        for (const reg of (0, extractor_1.extractAlpineMagic)(text)) {
+            for (const m of (0, xdata_1.parseXData)(reg.objectLiteral)) {
+                defs.push({
+                    ...this.makeDef(m, `${reg.kind}('${reg.registrationName}')`, uri, reg.objectOffset + m.offset, file),
+                    registrationName: reg.registrationName,
+                    registrationKind: reg.kind,
+                });
+            }
+        }
         return defs;
     }
     makeDef(m, source, uri, startOffset, sourceFile) {
@@ -247,6 +263,9 @@ class WorkspaceIndex {
             if (def.registrationKind === 'Alpine.store') {
                 this.removeFromRegistrations(this.storeRegistrations, def);
             }
+            if (def.registrationKind === 'Alpine.magic') {
+                this.removeFromRegistrations(this.magicRegistrations, def);
+            }
         }
         for (const def of newDefs) {
             this.insertIntoNameIndex(def);
@@ -255,6 +274,9 @@ class WorkspaceIndex {
             }
             if (def.registrationKind === 'Alpine.store') {
                 this.insertIntoRegistrations(this.storeRegistrations, def, uri);
+            }
+            if (def.registrationKind === 'Alpine.magic') {
+                this.insertIntoRegistrations(this.magicRegistrations, def, uri);
             }
         }
     }
@@ -311,6 +333,7 @@ class WorkspaceIndex {
         this.nameIndex.clear();
         this.dataRegistrations.clear();
         this.storeRegistrations.clear();
+        this.magicRegistrations.clear();
         for (const [uri, defs] of this.fileDefs) {
             const text = this.fileTexts.get(uri);
             if (!text)
@@ -333,6 +356,13 @@ class WorkspaceIndex {
                         this.storeRegistrations.set(name, []);
                     }
                     this.storeRegistrations.get(name).push({ def, text });
+                }
+                if (def.registrationKind === 'Alpine.magic') {
+                    const name = def.registrationName;
+                    if (!this.magicRegistrations.has(name)) {
+                        this.magicRegistrations.set(name, []);
+                    }
+                    this.magicRegistrations.get(name).push({ def, text });
                 }
             }
         }

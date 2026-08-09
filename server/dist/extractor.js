@@ -7,6 +7,7 @@ exports.findAttrByNameAtOffset = findAttrByNameAtOffset;
 exports.matchBraces = matchBraces;
 exports.extractAlpineData = extractAlpineData;
 exports.extractAlpineStore = extractAlpineStore;
+exports.extractAlpineMagic = extractAlpineMagic;
 exports.normalizeAttrName = normalizeAttrName;
 exports.isXData = isXData;
 exports.resolveDirectiveBase = resolveDirectiveBase;
@@ -208,6 +209,12 @@ function extractAlpineData(text) {
  */
 function extractAlpineStore(text) {
     return extractRegistration(text, /\bAlpine\.store\s*\(\s*['"]([^'"]+)['"]/g, 'Alpine.store');
+}
+/**
+ * Extract all `Alpine.magic('name', () => ({ … }))` registrations.
+ */
+function extractAlpineMagic(text) {
+    return extractRegistration(text, /\bAlpine\.magic\s*\(\s*['"]([^'"]+)['"]/g, 'Alpine.magic');
 }
 function extractRegistration(text, nameRegex, kind) {
     const results = [];
