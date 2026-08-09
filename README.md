@@ -63,6 +63,15 @@ In Zed, open `zed: install dev extension` and point it to the cloned directory.
 - **Blade** (`.blade.php`)
 - **HTML** (`.html`, `.htm`)
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | Installation, first use, verification |
+| [Features](docs/features.md) | Hover, go-to-definition, completions, workspace indexer |
+| [Architecture](docs/architecture.md) | Hybrid Rust + TypeScript design, module structure, data flow |
+| [Development](docs/development.md) | Build, test, iterate as dev extension, CI pipeline |
+
 ## How It Works
 
 The extension ships a Node.js language server bundled inside a Rust/WASM Zed extension wrapper.
@@ -81,6 +90,8 @@ Node.js LSP Server
   ├── xdata.js     — inline x-data member parser
   └── data.js      — magic properties & directives database
 ```
+
+For a deeper dive see [Architecture](docs/architecture.md).
 
 ## License
 
