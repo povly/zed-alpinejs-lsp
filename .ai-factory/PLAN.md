@@ -1,4 +1,4 @@
-# План: Tree-sitter injection + data.ts gaps + PHP support
+# План: Document Symbols
 
 **Режим:** Fast  
 **Дата:** 2026-08-09  
@@ -6,246 +6,240 @@
 
 ## Original Request
 
-Оба сразу, и хочу чтобы работало везде - html, blade, php!
+roadmap → Document Symbols
 
 ## Settings
 
-- **Testing:** Да — структурные тесты (extension.toml валидность, .scm файлы exist, data.ts покрытие)
+- **Testing:** Да — тесты для onDocumentSymbol handler
 - **Logging:** Verbose
 - **Docs:** Нет (warn-only)
 
 ## Roadmap Linkage
 
-- **Milestone:** "Semantic Tokens — цветовое выделение директив (x-*), magic properties ($*), модификаторов (.prevent)"
-- **Rationale:** Tree-sitter injection queries и highlights.scm напрямую решают milestone — подсветка Alpine директив отдельно от обычных HTML атрибутов. Дополнение data.ts расширяет LSP покрытие.
+- **Milestone:** "Document Symbols — outline x-data scope: методы/свойства как SymbolKind.Method/Property; регистрации Alpine.data()/store() как SymbolKind.Function. Низкий effort — парсинг уже есть"
+- **Rationale:** Парсинг x-data членов (parseXData) и регистраций (workspace.ts fileDefs) уже существует. Нужно только добавить LSP handler и преобразование в DocumentSymbol[].
 
-## Контекст исследований
+## Анализ
 
-### Tree-sitter injection — архитектурное ограничение Zed
+### Что есть
 
-Zed Extension API **не позволяет** добавлять `.scm` queries к существующим языкам. Нужно регистрировать новый язык. Однако `grammar = "html"` в `config.toml` reuses built-in HTML tree-sitter grammar по имени.
+| Компонент | Где | Что предоставляет |
+|-----------|-----|-------------------|
+| `parseXData(value)` | `xdata.ts` | `XDataMember[]` — имя, kind (method/property/getter), offset, length |
+| `attrCache` | `server.ts` | Все Alpine атрибуты документа, включая x-data |
+| `workspace.fileDefs` | `workspace.ts` | `Map<uri, WorkspaceDef[]>` — регистрации Alpine.data/store/magic per file |
+| `workspace.resolveScope(name, uri)` | `workspace.ts` | `ResolvedScope | null` — members зарегистрированного компонента |
 
-### Текущий статус по форматам
+### Что нужно добавить
 
-| Формат | LSP сейчас | Tree-sitter injection сейчас | После плана |
-|--------|:---:|:---:|:---:|
-| `.html` | ✅ | ❌ | ✅ + ✅ |
-| `.blade.php` | ✅ | ✅ (Blade extension) | ✅ + ✅ |
-| `.php` | ❌ | ❌ | ✅ + ❌ |
+1. `documentSymbolProvider: true` в capabilities onInitialize
+2. Импорты `DocumentSymbol`, `SymbolKind` из vscode-languageserver
+3. `connection.onDocumentSymbol(...)` handler
+4. Метод `onDocumentSymbol(params)` — возвращает `DocumentSymbol[]`
 
-PHP tree-sitter injection требует кастомный PHP grammar — за рамками этого плана.
+### Логика onDocumentSymbol
 
-### Аудит Alpine.js API — пробелы в data.ts
+Для текущего документа (`params.textDocument.uri`):
 
-- **Модификаторы:** 11 пропущено из ~30 (x-on: `.dot`, `.passive.false`; x-model: `.change`, `.blur`, `.enter`; x-transition: `.duration`, `.delay`, `.opacity`, `.scale`, `.origin`)
-- **Global APIs:** 9 пропущено из 9 (`Alpine.data`, `.store`, `.bind`, `.start`, `.plugin`, `.directive`, `.magic`, `.reactive`, `.effect`)
-- **Директивы / Magic / Transition subs:** полностью покрыто (18/18, 10/10, 6/6)
+**1. Inline x-data scope:**
+- Найти все x-data атрибуты через `attrCache`
+- Для каждого с объектным литералом (`value.startsWith('{')`): `parseXData(value)` → child symbols
+- Properties → `SymbolKind.Property`, Methods → `SymbolKind.Method`
+- Родительский symbol → `SymbolKind.Object`, range = весь x-data атрибут
+
+**2. Registered x-data (по имени):**
+- Для x-data со значением-именем (`value = "dropdown"`): `workspace.resolveScope(value, uri)` → members
+- Те же SymbolKind, но range указывает на атрибут в HTML
+
+**3. Регистрации Alpine.data/store в этом файле:**
+- `workspace.fileDefs.get(uri)` → все определения в текущем файле
+- Для каждого с `registrationKind === 'Alpine.data'` → `SymbolKind.Function`
+- Для каждого с `registrationKind === 'Alpine.store'` → `SymbolKind.Object`
+- Range из `def.startOffset` / `def.length`
+
+### Маппинг range
+
+`DocumentSymbol.range` и `.selectionRange` требуют `{ start: Position, end: Position }`. Используем `doc.offsetAt()`:
+- Inline x-data members: offset относительно начала value атрибута → абсолютный через `attr.valueOffset + member.offset`
+- Регистрации: `def.startOffset` / `def.length` (уже абсолютные)
 
 ---
 
 ## Tasks
 
-### Фаза 1: Tree-sitter injection (HTML (Alpine) language)
-
-#### Task 1: Создать languages/html-alpine/ структуру
-
-**Файлы:** `languages/html-alpine/config.toml`, `languages/html-alpine/injections.scm`, `languages/html-alpine/highlights.scm`
-
-**config.toml** — по образцу alpine-syntax:
-```toml
-name = "HTML (Alpine)"
-grammar = "html"
-path_suffixes = ["html", "htm"]
-completion_query_characters = ["-", ":", "@", "$"]
-```
-
-**injections.scm** — JS подсветка внутри Alpine атрибутов. Адаптировать из alpine-syntax + Blade extension:
-- `x-data`, `x-init`, `x-show`, `x-if`, `x-for`, `x-text`, `x-html`, `x-effect`, `x-modelable`, `x-intersect` → `injection.language "javascript"`
-- `x-bind:*`, `x-model:*` → `injection.language "javascript"`
-- `x-on:*` → `injection.language "javascript"`
-- Shorthand `@event="..."` → `injection.language "javascript"`
-- Shorthand `:attr="..."` → `injection.language "javascript"`
-- Стандартные HTML injections: `<script>`, `<style>`, `style=`, `on*=` (скопировать из built-in HTML чтобы не потерять)
-
-**highlights.scm** — Alpine директивы визуально отделены:
-- `(attribute_name) @keyword` для `^x-`, `^:`, `^@` паттернов
-- Стандартные HTML highlight queries (скопировать из built-in HTML)
-
-**MUST DO:**
-- Скопировать стандартные HTML injections/highlights из Zed built-in HTML extension, чтобы не потерять существующую подсветку
-- `x-teleport`, `x-ref`, `x-transition` — НЕ инжектить JS (значения не JS-выражения), как в Blade extension
-
-**MUST NOT DO:**
-- Не регистрировать path_suffixes для `.blade.php` или `.php` — это конфликтует с Blade/PHP грамматиками
-
----
-
-#### Task 2: Обновить extension.toml — grammar + language registration
-
-**Файл:** `extension.toml`
-
-Изменения:
-1. Добавить секцию `[grammars.html]` — registered tree-sitter HTML grammar (repository + commit из Zed built-in HTML extension)
-2. Изменить `languages` в `[language_servers.alpine-language-server]` — добавить `"HTML (Alpine)"` и `"PHP"`:
-```toml
-[language_servers.alpine-language-server]
-name = "Alpine Language Server"
-languages = ["Blade", "HTML", "HTML (Alpine)", "PHP"]
-```
-
-**MUST DO:**
-- Grammar commit hash взять из Zed built-in HTML extension: `tree-sitter/tree-sitter-html` commit `bfa075d83c6b97cd48440b3829ab8d24a2319809`
-- Проверить что добавление "PHP" не конфликтует с Intelephense — Zed поддерживает несколько LSP серверов на один язык
-
-**MUST NOT DO:**
-- Не удалять существующие "Blade" и "HTML" из languages — backward compatibility
-
-**Контекст:** [Zed multi-LSP per language docs](https://zed.dev/docs/languages) — подтверждает что несколько language_servers могут обслуживать один язык одновременно.
-
----
-
-### Фаза 2: Дополнение data.ts
-
-#### Task 3: Добавить 11 недостающих модификаторов в data.ts
-
-**Файл:** `server/src/data.ts`
-
-Добавить в массив `MODIFIERS`:
-
-| Модификатор | appliesTo | Описание |
-|-------------|-----------|----------|
-| `.dot` | `["x-on"]` | Converts dashes to dots in event name |
-| `.passive.false` | `["x-on"]` | Makes touch/wheel events cancelable (allows preventDefault) |
-| `.change` | `["x-model"]` | Syncs on native `change` event |
-| `.blur` | `["x-model"]` | Syncs when input loses focus |
-| `.enter` | `["x-model"]` | Syncs when user presses Enter |
-| `.duration` | `["x-transition"]` | Customize duration: `x-transition.duration.500ms` |
-| `.delay` | `["x-transition"]` | Delay transition: `x-transition.delay.50ms` |
-| `.opacity` | `["x-transition"]` | Only transition opacity (no scale) |
-| `.scale` | `["x-transition"]` | Only transition scale (no opacity) |
-| `.origin` | `["x-transition"]` | Scale origin: top/bottom/left/right |
-
-> `.scale.N` и `.origin.*` — динамические значения, регистрируем base name `.scale` и `.origin`.
-
-**MUST DO:**
-- Каждый модификатор: `name`, `appliesTo`, `description`, `example` (как существующие)
-- Hover должен работать для `.duration`, `.delay` и т.д. через `getModifierAtOffset`
-
-**MUST NOT DO:**
-- Не добавлять плагинные модификаторы (@alpinejs/*) — за рамками core Alpine
-
----
-
-#### Task 4: Добавить 9 Global APIs в data.ts
-
-**Файл:** `server/src/data.ts`
-
-Создать новый массив `GLOBAL_APIS` (по аналогии с `DIRECTIVES`):
-
-```typescript
-export interface GlobalApi {
-  name: string;           // "Alpine.data"
-  signature: string;      // "Alpine.data(name, callback)"
-  description: string;    // markdown docs
-  example?: string;       // usage example
-}
-export const GLOBAL_APIS: GlobalApi[] = [ ... ]
-```
-
-9 APIs:
-| Name | Signature |
-|------|-----------|
-| `Alpine.data` | `Alpine.data(name, callback)` |
-| `Alpine.store` | `Alpine.store(name, object)` |
-| `Alpine.bind` | `Alpine.bind(callback)` |
-| `Alpine.start` | `Alpine.start()` |
-| `Alpine.plugin` | `Alpine.plugin(callback)` |
-| `Alpine.directive` | `Alpine.directive(name, callback)` |
-| `Alpine.magic` | `Alpine.magic(name, callback)` |
-| `Alpine.reactive` | `Alpine.reactive(object)` |
-| `Alpine.effect` | `Alpine.effect(callback)` |
-
-**MUST DO:**
-- Описания из официальной документации alpinejs.dev/globals/* и alpinejs.dev/advanced/*
-- Example для каждого (реальный usage)
-
-**MUST NOT DO:**
-- Не добавлять internal/undocumented APIs (`Alpine.addScopeToNode`, `Alpine.closestDataStack` и т.д.)
-
----
-
-#### Task 5: Wire Global APIs в server.ts — hover и completion
+### Task 1: Добавить documentSymbolProvider capability + импорты
 
 **Файл:** `server/src/server.ts`
 
-**Hover:** в `onHover` — если слово матчит `Alpine.\w+`, искать в `GLOBAL_APIS`, вернуть signature + description.
-
-**Completion:** в `onCompletion` — если пользователь печатает `Alpine.`, предложить все global APIs как CompletionItem (Kind.Function).
+1. Добавить `DocumentSymbol`, `SymbolKind` в импорт из `vscode-languageserver/node` (строка 1-11)
+2. Добавить `documentSymbolProvider: true` в `capabilities` объект (после `definitionProvider: true`, строка 104)
 
 **MUST DO:**
-- Добавить detection: `const globalMatch = word.match(/^Alpine\.(\w+)$/);`
-- Добавить GLOBAL_APIS import в server.ts
-- Логирование: `this.connection.console.info('[hover] global API: ' + api.name)` (verbose level)
-
-**MUST NOT DO:**
-- Не добавлять go-to-definition для `Alpine.*` вызовов — это отдельная задача (workspace.ts уже сканирует registrations, но go-to-def для arbitrary `Alpine.plugin()` вызовов — за рамками)
+- Сохранить существующие capabilities без изменений
+- Использовать `hierarchicalDocumentSymbolSupport: true` если нужны nested symbols (опционально)
 
 ---
 
-### Фаза 3: Тесты и сборка
+### Task 2: Реализовать onDocumentSymbol handler
 
-#### Task 6: Структурные тесты для tree-sitter queries
+**Файл:** `server/src/server.ts`
+
+1. Зарегистрировать handler в конструкторе `start()` (или там где регистрируются onHover/onDefinition):
+```typescript
+connection.onDocumentSymbol((params: DocumentSymbolParams) => {
+  return this.onDocumentSymbol(params);
+});
+```
+
+2. Импортировать `DocumentSymbolParams` из vscode-languageserver/node
+
+3. Реализовать метод `onDocumentSymbol`:
+```typescript
+private onDocumentSymbol(params: DocumentSymbolParams): DocumentSymbol[] {
+  const uri = params.textDocument.uri;
+  const doc = this.documents.get(uri);
+  if (!doc) return [];
+
+  const symbols: DocumentSymbol[] = [];
+
+  // 1. Inline x-data scopes from attrCache
+  const attrs = this.attrCache.get(uri) ?? [];
+  for (const attr of attrs) {
+    if (!isXData(attr.name)) continue;
+    const members = this.getScopeMembers(uri, attr);
+    if (members.length === 0) continue;
+
+    const valueStart = attr.valueOffset;
+    const childSymbols = members.map((m) => {
+      const memberOffset = valueStart + (m.offset ?? 0);
+      const memberEnd = memberOffset + (m.length ?? m.name.length);
+      return {
+        name: m.name,
+        kind: m.kind === 'method' ? SymbolKind.Method : SymbolKind.Property,
+        range: {
+          start: doc.positionAt(memberOffset),
+          end: doc.positionAt(memberEnd),
+        },
+        selectionRange: {
+          start: doc.positionAt(memberOffset),
+          end: doc.positionAt(memberOffset + m.name.length),
+        },
+      };
+    });
+
+    // Parent symbol for the x-data scope
+    const xdataStart = attr.valueOffset;
+    const xdataEnd = attr.valueOffset + attr.valueLength;
+    const scopeName = attr.value.trim().startsWith('{')
+      ? 'x-data (inline)'
+      : `x-data: ${attr.value}`;
+    symbols.push({
+      name: scopeName,
+      kind: SymbolKind.Object,
+      range: { start: doc.positionAt(xdataStart), end: doc.positionAt(xdataEnd) },
+      selectionRange: { start: doc.positionAt(xdataStart), end: doc.positionAt(xdataStart + scopeName.length) },
+      children: childSymbols,
+    });
+  }
+
+  // 2. Alpine.data/store registrations in this file
+  const fileDefs = this.workspace.getDefsForFile(uri);
+  for (const def of fileDefs) {
+    if (!def.registrationName) continue;
+    const defStart = def.startOffset;
+    const defEnd = defStart + def.length;
+    symbols.push({
+      name: `${def.registrationKind}('${def.registrationName}')`,
+      kind: def.registrationKind === 'Alpine.store' ? SymbolKind.Object : SymbolKind.Function,
+      range: { start: doc.positionAt(defStart), end: doc.positionAt(defEnd) },
+      selectionRange: { start: doc.positionAt(defStart), end: doc.positionAt(defStart + def.name.length) },
+    });
+  }
+
+  this.connection.console.info(`[documentSymbol] returned ${symbols.length} symbols for ${uri}`);
+  return symbols;
+}
+```
+
+**MUST DO:**
+- Добавить `isXData` в импорт из extractor если ещё нет (проверить)
+- Добавить public метод `getDefsForFile(uri)` в WorkspaceIndex если ещё нет (fileDefs приватный)
+- Verbose логирование: `[documentSymbol] returned N symbols for <uri>`
+- Guard clauses: `if (!doc) return []`, `if (members.length === 0) continue`
+- Для registered scopes (имя, не inline): использовать `workspace.resolveScope(name, uri)` вместо parseXData напрямую — `getScopeMembers` уже это делает
+- children опциональны — если x-data scope пустой, пропустить
+
+**MUST NOT DO:**
+- Не создавать новых парсеров — использовать существующие `getScopeMembers` / `parseXData`
+- Не модифицировать workspace.ts логику индексации — только добавить getter `getDefsForFile`
+- Не добавлять `console.log` — только `connection.console.info`
+
+---
+
+### Task 3: Добавить getDefsForFile в WorkspaceIndex
+
+**Файл:** `server/src/workspace.ts`
+
+Добавить public метод:
+```typescript
+getDefsForFile(uri: string): WorkspaceDef[] {
+  return this.fileDefs.get(uri) ?? [];
+}
+```
+
+**MUST DO:**
+- Возвращает массив всех определений в файле (включая Alpine.data/store/magic registrations и inline x-data)
+- Read-only — не мутирует fileDefs
+
+---
+
+### Task 4: Тесты для onDocumentSymbol
 
 **Файл:** `test/test.js`
 
-Добавить suite `"tree-sitter language files"`:
-- `existsSync('languages/html-alpine/config.toml')` → true
-- `existsSync('languages/html-alpine/injections.scm')` → true
-- `existsSync('languages/html-alpine/highlights.scm')` → true
-- Парсить config.toml — проверить `name`, `grammar` поля
-- Проверить что injections.scm содержит `injection.language` и `javascript`
+Добавить suite `"Document Symbols"`:
+
+1. **Test: inline x-data → method + property symbols**
+   - HTML: `<div x-data="{ open: false, toggle() { this.open = !this.open } }">`
+   - Expect: 1 parent symbol (SymbolKind.Object), 2 children (open as Property, toggle as Method)
+
+2. **Test: registered x-data → resolved members**
+   - HTML with `x-data="dropdown"` + workspace with `Alpine.data('dropdown', ...)` registration
+   - Expect: parent symbol + children from registration
+
+3. **Test: Alpine.data registration symbol**
+   - JS: `Alpine.data('cart', () => ({ items: [] }))`
+   - Expect: SymbolKind.Function symbol
+
+4. **Test: Alpine.store registration symbol**
+   - JS: `Alpine.store('ui', { sidebar: false })`
+   - Expect: SymbolKind.Object symbol
+
+5. **Test: empty document → empty symbols**
+   - HTML без Alpine атрибутов
+   - Expect: `[]`
+
+6. **Test: symbol names are correct**
+   - Verify `symbol.name` for each case
 
 **MUST DO:**
-- Использовать существующий test harness (test helpers)
-- Группа в `suite("tree-sitter language files", () => { ... })`
-
-**MUST NOT DO:**
-- Не парсить .scm файлы как tree-sitter queries — это требует WASM runtime
+- Использовать `createTestServer()` + `loadDocument()` хелперы
+- Использовать `SymbolKind` enum из vscode-languageserver для проверок
+- Для registration тестов: настроить workspace через mock файлы (как в existing workspace tests)
 
 ---
 
-#### Task 7: Тесты для новых модификаторов и global APIs
-
-**Файл:** `test/test.js`
-
-Добавить suite `"data.ts coverage"`:
-- Test: все 11 новых модификаторов присутствуют в `MODIFIERS` (name, appliesTo, description не пустой)
-- Test: все 9 global APIs присутствуют в `GLOBAL_APIS` (name, signature, description не пустой)
-- Test: `MODIFIERS` totalCount >= 29 (19 существующих + 10 новых, `.scale.N` считается как `.scale`)
-- Test: `GLOBAL_APIS.length === 9`
-
----
-
-#### Task 8: Сборка и проверка
+### Task 5: Сборка и проверка
 
 - `cd server && npm run build` — tsc strict, 0 errors
 - `node test/test.js` — Failed: 0
-- Проверить `extension.toml` валидность — `cargo check` (Rust компиляция с zed_extension_api)
-- `cargo build --release` — успешно, extension.wasm создан
-
-**Контекст:** AGENTS.md правило — «Сборка перед коммитом: пересобирать server/dist/ через npm run build после изменений TS — dist коммичится и встраивается в WASM».
+- Проверить что `documentSymbolProvider: true` в capabilities onInitialize response
 
 ---
 
 ## Commit Plan
 
-3 коммита (8 задач, checkpoint каждые 2-3 задачи):
+1 коммит (< 5 задач):
 
-1. **`feat: add tree-sitter injection for HTML (Alpine) language + PHP LSP support`**
-   - Tasks 1, 2 (languages/html-alpine/* + extension.toml grammar registration)
-
-2. **`feat: add 11 missing modifiers + 9 global APIs to data.ts`**
-   - Tasks 3, 4, 5 (data.ts additions + server.ts wiring)
-
-3. **`test: add structural tests for tree-sitter files + data.ts coverage`**
-   - Tasks 6, 7, 8 (tests + build verification)
+**`feat: add documentSymbolProvider with x-data scope outline`**
+- Tasks 1-5 (capability + handler + workspace getter + tests + build)

@@ -78,6 +78,7 @@ class AlpineLanguageServer {
                     completionProvider: { triggerCharacters: ['$', '.'] },
                     hoverProvider: true,
                     definitionProvider: true,
+                    documentSymbolProvider: true,
                     textDocumentSync: node_1.TextDocumentSyncKind.Full,
                 },
             };
@@ -85,6 +86,9 @@ class AlpineLanguageServer {
         connection.onCompletion((p) => this.onCompletion(p));
         connection.onHover((p) => this.onHover(p));
         connection.onDefinition((p) => this.onDefinition(p));
+        connection.onDocumentSymbol((params) => {
+            return this.onDocumentSymbol(params);
+        });
     }
     start() {
         this.connection.listen();
@@ -422,6 +426,71 @@ class AlpineLanguageServer {
             return this.defToLocation(wsDefs[0]);
         }
         return null;
+    }
+    onDocumentSymbol(params) {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc)
+            return [];
+        const symbols = [];
+        const attrs = this.attrCache.get(uri) ?? [];
+        for (const attr of attrs) {
+            if (!(0, extractor_1.isXData)(attr.name))
+                continue;
+            const members = this.getScopeMembers(uri, attr);
+            if (members.length === 0)
+                continue;
+            const valueStart = attr.valueOffset;
+            const childSymbols = members.map((m) => {
+                const memberOffset = valueStart + (m.offset ?? 0);
+                const memberEnd = memberOffset + (m.length ?? m.name.length);
+                return {
+                    name: m.name,
+                    kind: m.kind === 'method' ? node_1.SymbolKind.Method : node_1.SymbolKind.Property,
+                    range: {
+                        start: doc.positionAt(memberOffset),
+                        end: doc.positionAt(memberEnd),
+                    },
+                    selectionRange: {
+                        start: doc.positionAt(memberOffset),
+                        end: doc.positionAt(memberOffset + m.name.length),
+                    },
+                };
+            });
+            const xdataStart = attr.valueOffset;
+            const xdataEnd = attr.valueOffset + attr.valueLength;
+            const scopeName = attr.value.trim().startsWith('{')
+                ? 'x-data (inline)'
+                : `x-data: ${attr.value}`;
+            symbols.push({
+                name: scopeName,
+                kind: node_1.SymbolKind.Object,
+                range: { start: doc.positionAt(xdataStart), end: doc.positionAt(xdataEnd) },
+                selectionRange: {
+                    start: doc.positionAt(xdataStart),
+                    end: doc.positionAt(xdataStart + Math.min(scopeName.length, attr.valueLength)),
+                },
+                children: childSymbols,
+            });
+        }
+        const fileDefs = this.workspace.getDefsForFile(uri);
+        for (const def of fileDefs) {
+            if (!def.registrationName)
+                continue;
+            const defStart = def.startOffset;
+            const defEnd = defStart + def.length;
+            symbols.push({
+                name: `${def.registrationKind}('${def.registrationName}')`,
+                kind: def.registrationKind === 'Alpine.store' ? node_1.SymbolKind.Object : node_1.SymbolKind.Function,
+                range: { start: doc.positionAt(defStart), end: doc.positionAt(defEnd) },
+                selectionRange: {
+                    start: doc.positionAt(defStart),
+                    end: doc.positionAt(defStart + def.name.length),
+                },
+            });
+        }
+        this.connection.console.info(`[documentSymbol] returned ${symbols.length} symbols for ${uri}`);
+        return symbols;
     }
     getScopeMembers(uri, attr) {
         const xdata = this.getXDataScope(uri, attr);

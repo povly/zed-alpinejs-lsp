@@ -43,6 +43,7 @@ function createTestServer() {
     onCompletion: (fn) => { handlers.onCompletion = fn; return disposable(); },
     onHover: (fn) => { handlers.onHover = fn; return disposable(); },
     onDefinition: (fn) => { handlers.onDefinition = fn; return disposable(); },
+    onDocumentSymbol: (fn) => { handlers.onDocumentSymbol = fn; return disposable(); },
     // TextDocuments.listen() registers these document lifecycle hooks
     onDidOpenTextDocument: () => disposable(),
     onDidChangeTextDocument: () => disposable(),

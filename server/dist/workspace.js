@@ -109,6 +109,9 @@ class WorkspaceIndex {
     lookupAlpineMagic(name) {
         return this.magicRegistrations.get(name) ?? [];
     }
+    getDefsForFile(uri) {
+        return this.fileDefs.get(uri) ?? [];
+    }
     resolveScope(xdataValue, currentUri) {
         const trimmed = xdataValue.trim();
         if (trimmed.startsWith('{'))

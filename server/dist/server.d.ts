@@ -10,6 +10,7 @@ export declare class AlpineLanguageServer {
     private onCompletion;
     private onHover;
     private onDefinition;
+    private onDocumentSymbol;
     private getScopeMembers;
     private getXDataScope;
     private findScopeXData;

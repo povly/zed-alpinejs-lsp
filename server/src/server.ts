@@ -2,12 +2,15 @@ import {
   CompletionItem,
   CompletionItemKind,
   CompletionParams,
-  Hover,
-  InitializeResult,
-  TextDocumentSyncKind,
   Connection,
-  Location,
+  DocumentSymbol,
+  DocumentSymbolParams,
+  Hover,
   InitializeParams,
+  InitializeResult,
+  Location,
+  SymbolKind,
+  TextDocumentSyncKind,
 } from 'vscode-languageserver/node';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -102,6 +105,7 @@ export class AlpineLanguageServer {
           completionProvider: { triggerCharacters: ['$', '.'] },
           hoverProvider: true,
           definitionProvider: true,
+          documentSymbolProvider: true,
           textDocumentSync: TextDocumentSyncKind.Full,
         },
       };
@@ -110,6 +114,9 @@ export class AlpineLanguageServer {
     connection.onCompletion((p) => this.onCompletion(p));
     connection.onHover((p) => this.onHover(p));
     connection.onDefinition((p) => this.onDefinition(p));
+    connection.onDocumentSymbol((params: DocumentSymbolParams) => {
+      return this.onDocumentSymbol(params);
+    });
   }
 
   start() {
@@ -477,6 +484,74 @@ export class AlpineLanguageServer {
     }
 
     return null;
+  }
+
+  private onDocumentSymbol(params: DocumentSymbolParams): DocumentSymbol[] {
+    const uri = params.textDocument.uri;
+    const doc = this.documents.get(uri);
+    if (!doc) return [];
+
+    const symbols: DocumentSymbol[] = [];
+
+    const attrs = this.attrCache.get(uri) ?? [];
+    for (const attr of attrs) {
+      if (!isXData(attr.name)) continue;
+      const members = this.getScopeMembers(uri, attr);
+      if (members.length === 0) continue;
+
+      const valueStart = attr.valueOffset;
+      const childSymbols: DocumentSymbol[] = members.map((m) => {
+        const memberOffset = valueStart + (m.offset ?? 0);
+        const memberEnd = memberOffset + (m.length ?? m.name.length);
+        return {
+          name: m.name,
+          kind: m.kind === 'method' ? SymbolKind.Method : SymbolKind.Property,
+          range: {
+            start: doc.positionAt(memberOffset),
+            end: doc.positionAt(memberEnd),
+          },
+          selectionRange: {
+            start: doc.positionAt(memberOffset),
+            end: doc.positionAt(memberOffset + m.name.length),
+          },
+        };
+      });
+
+      const xdataStart = attr.valueOffset;
+      const xdataEnd = attr.valueOffset + attr.valueLength;
+      const scopeName = attr.value.trim().startsWith('{')
+        ? 'x-data (inline)'
+        : `x-data: ${attr.value}`;
+      symbols.push({
+        name: scopeName,
+        kind: SymbolKind.Object,
+        range: { start: doc.positionAt(xdataStart), end: doc.positionAt(xdataEnd) },
+        selectionRange: {
+          start: doc.positionAt(xdataStart),
+          end: doc.positionAt(xdataStart + Math.min(scopeName.length, attr.valueLength)),
+        },
+        children: childSymbols,
+      });
+    }
+
+    const fileDefs = this.workspace.getDefsForFile(uri);
+    for (const def of fileDefs) {
+      if (!def.registrationName) continue;
+      const defStart = def.startOffset;
+      const defEnd = defStart + def.length;
+      symbols.push({
+        name: `${def.registrationKind}('${def.registrationName}')`,
+        kind: def.registrationKind === 'Alpine.store' ? SymbolKind.Object : SymbolKind.Function,
+        range: { start: doc.positionAt(defStart), end: doc.positionAt(defEnd) },
+        selectionRange: {
+          start: doc.positionAt(defStart),
+          end: doc.positionAt(defStart + def.name.length),
+        },
+      });
+    }
+
+    this.connection.console.info(`[documentSymbol] returned ${symbols.length} symbols for ${uri}`);
+    return symbols;
   }
 
   private getScopeMembers(uri: string, attr: AlpineAttr): XDataMember[] {

@@ -113,6 +113,10 @@ export class WorkspaceIndex {
     return this.magicRegistrations.get(name) ?? [];
   }
 
+  getDefsForFile(uri: string): WorkspaceDef[] {
+    return this.fileDefs.get(uri) ?? [];
+  }
+
   resolveScope(xdataValue: string, currentUri: string): ResolvedScope | null {
     const trimmed = xdataValue.trim();
 

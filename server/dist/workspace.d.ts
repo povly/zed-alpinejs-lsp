@@ -49,6 +49,7 @@ export declare class WorkspaceIndex {
         def: WorkspaceDef;
         text: string;
     }[];
+    getDefsForFile(uri: string): WorkspaceDef[];
     resolveScope(xdataValue: string, currentUri: string): ResolvedScope | null;
     getRegistrationMembers(def: WorkspaceDef, text: string): WorkspaceDef[];
     getPosition(def: WorkspaceDef): {

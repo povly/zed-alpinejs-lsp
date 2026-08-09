@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDirectiveBase, getModifierAtOffset, isAlpineAttr, matchBraces, extractAlpineData, extractAlpineMagic } = require('../server/dist/extractor');
-const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
+const { CompletionItemKind, SymbolKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
 const { DIRECTIVES, TRANSITION_SUBS, MODIFIERS, GLOBAL_APIS } = require('../server/dist/data');
@@ -2510,6 +2510,92 @@ suite('data.ts coverage', () => {
     for (const name of expected) {
       const api = GLOBAL_APIS.find((a) => a.name === name);
       assert.ok(api, `global API ${name} not found`);
+    }
+  });
+});
+
+// ── AlpineLanguageServer.onDocumentSymbol ───────────────────
+
+suite('Document Symbols', () => {
+  test('inline x-data → method + property symbols', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false, toggle() { this.open = !this.open } }">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.ok(symbols.length >= 1, 'should have at least 1 parent symbol');
+    const xdataSymbol = symbols.find(s => s.name.includes('x-data'));
+    assert.ok(xdataSymbol, 'should have x-data parent symbol');
+    assert.strictEqual(xdataSymbol.kind, SymbolKind.Object);
+    assert.ok(xdataSymbol.children, 'should have child symbols');
+    assert.ok(xdataSymbol.children.length >= 2, 'should have open + toggle');
+    const openSym = xdataSymbol.children.find(c => c.name === 'open');
+    assert.ok(openSym, 'should have open property');
+    assert.strictEqual(openSym.kind, SymbolKind.Property);
+    const toggleSym = xdataSymbol.children.find(c => c.name === 'toggle');
+    assert.ok(toggleSym, 'should have toggle method');
+    assert.strictEqual(toggleSym.kind, SymbolKind.Method);
+  });
+
+  test('empty document → empty symbols', () => {
+    const { server } = createTestServer();
+    const html = '<div class="foo">no alpine here</div>';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(symbols.length, 0);
+  });
+
+  test('x-data with no members → skipped', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{}">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(symbols.length, 0);
+  });
+
+  test('multiple x-data on same page → multiple parent symbols', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ a: 1 }"><span x-data="{ b: 2 }">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    const xdataSymbols = symbols.filter(s => s.name.includes('x-data'));
+    assert.strictEqual(xdataSymbols.length, 2);
+  });
+
+  test('registered x-data name → resolved members from workspace', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false, toggle() { this.open = !this.open } }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    const xdataSymbol = symbols.find(s => s.name.includes('x-data'));
+    assert.ok(xdataSymbol, 'should have x-data symbol for registered component');
+    if (xdataSymbol && xdataSymbol.children) {
+      assert.ok(xdataSymbol.children.find(c => c.name === 'open'), 'should resolve open from registration');
+    }
+  });
+
+  test('symbol ranges are within document bounds', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const symbols = server['onDocumentSymbol']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    for (const sym of symbols) {
+      const startPos = sym.range.start;
+      const endPos = sym.range.end;
+      assert.ok(startPos.line >= 0 && startPos.character >= 0, `${sym.name} start position invalid`);
+      assert.ok(endPos.line >= startPos.line, `${sym.name} end before start`);
     }
   });
 });
