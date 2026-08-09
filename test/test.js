@@ -11,7 +11,7 @@ const { extractAlpineAttrs, findAttrAtOffset, findAttrByNameAtOffset, resolveDir
 const { CompletionItemKind } = require('../server/node_modules/vscode-languageserver/node');
 const { parseXData } = require('../server/dist/xdata');
 const { WorkspaceIndex } = require('../server/dist/workspace');
-const { DIRECTIVES, TRANSITION_SUBS } = require('../server/dist/data');
+const { DIRECTIVES, TRANSITION_SUBS, MODIFIERS, GLOBAL_APIS } = require('../server/dist/data');
 const { createTestServer, loadDocument, DEBUG } = require('./helpers');
 const { TextDocument } = require('../server/node_modules/vscode-languageserver-textdocument');
 
@@ -982,7 +982,7 @@ suite('AlpineLanguageServer.onHover', () => {
 // ── onCompletion: modifiers ─────────────────────────────────
 
 suite('onCompletion: modifiers', () => {
-  test('x-on:click.| returns all 12 x-on modifiers', () => {
+  test('x-on:click.| returns all 14 x-on modifiers', () => {
     const { server } = createTestServer();
     const html = '<button x-on:click.="">';
     const doc = loadDocument(server, 'file:///c.html', html);
@@ -1004,7 +1004,9 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.capture'));
     assert.ok(labels.includes('.passive'));
     assert.ok(labels.includes('.camel'));
-    assert.strictEqual(labels.length, 12);
+    assert.ok(labels.includes('.dot'), '.dot added for x-on');
+    assert.ok(labels.includes('.passive.false'), '.passive.false added for x-on');
+    assert.strictEqual(labels.length, 14);
     if (DEBUG_LOG) console.error(`[modifiers] x-on completion items=${items.length}`);
   });
 
@@ -1021,7 +1023,7 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.stop'), '.stop should be present for client-side filtering');
   });
 
-  test('x-model.| returns 7 x-model modifiers', () => {
+  test('x-model.| returns 10 x-model modifiers', () => {
     const { server } = createTestServer();
     const html = '<input x-model.="">';
     const doc = loadDocument(server, 'file:///c.html', html);
@@ -1038,7 +1040,10 @@ suite('onCompletion: modifiers', () => {
     assert.ok(labels.includes('.trim'));
     assert.ok(labels.includes('.boolean'));
     assert.ok(labels.includes('.fill'));
-    assert.strictEqual(labels.length, 7);
+    assert.ok(labels.includes('.change'), '.change added for x-model');
+    assert.ok(labels.includes('.blur'), '.blur added for x-model');
+    assert.ok(labels.includes('.enter'), '.enter added for x-model');
+    assert.strictEqual(labels.length, 10);
   });
 
   test('x-show.| returns 2 x-show modifiers', () => {
@@ -2428,6 +2433,84 @@ suite('$store/$magic chain: onCompletion', () => {
     });
     const labels = items.map(i => i.label);
     assert.ok(labels.includes('open'), 'scope members still returned for this.');
+  });
+});
+
+// ─── Tree-sitter language files ─────────────────────────────────────────
+suite('tree-sitter language files', () => {
+  const langDir = path.join(__dirname, '..', 'languages', 'html-alpine');
+
+  test('config.toml exists', () => {
+    assert.ok(fs.existsSync(path.join(langDir, 'config.toml')));
+  });
+
+  test('injections.scm exists', () => {
+    assert.ok(fs.existsSync(path.join(langDir, 'injections.scm')));
+  });
+
+  test('highlights.scm exists', () => {
+    assert.ok(fs.existsSync(path.join(langDir, 'highlights.scm')));
+  });
+
+  test('config.toml has name = "HTML (Alpine)"', () => {
+    const config = fs.readFileSync(path.join(langDir, 'config.toml'), 'utf-8');
+    assert.ok(config.includes('name = "HTML (Alpine)"'));
+  });
+
+  test('config.toml has grammar = "html"', () => {
+    const config = fs.readFileSync(path.join(langDir, 'config.toml'), 'utf-8');
+    assert.ok(config.includes('grammar = "html"'));
+  });
+
+  test('injections.scm contains JS injection for Alpine directives', () => {
+    const inj = fs.readFileSync(path.join(langDir, 'injections.scm'), 'utf-8');
+    assert.ok(inj.includes('injection.language'), 'missing injection.language');
+    assert.ok(inj.includes('"javascript"'), 'missing javascript injection');
+    assert.ok(inj.includes('x-data'), 'missing x-data injection rule');
+  });
+
+  test('highlights.scm contains Alpine directive highlight rules', () => {
+    const hl = fs.readFileSync(path.join(langDir, 'highlights.scm'), 'utf-8');
+    assert.ok(hl.includes('@keyword'), 'missing @keyword capture');
+    assert.ok(hl.includes('^x-') || hl.includes('^x-'), 'missing x- directive pattern');
+  });
+});
+
+// ─── data.ts coverage ───────────────────────────────────────────────────
+suite('data.ts coverage', () => {
+  const NEW_MODIFIERS = ['.dot', '.passive.false', '.change', '.blur', '.enter', '.duration', '.delay', '.opacity', '.scale', '.origin'];
+
+  test('all 10 new modifiers present in MODIFIERS', () => {
+    for (const name of NEW_MODIFIERS) {
+      const mod = MODIFIERS.find((m) => m.name === name);
+      assert.ok(mod, `modifier ${name} not found in MODIFIERS`);
+      assert.ok(mod.for.length > 0, `modifier ${name} has empty for[]`);
+      assert.ok(mod.documentation.length > 0, `modifier ${name} has empty documentation`);
+    }
+  });
+
+  test('MODIFIERS total count >= 29', () => {
+    assert.ok(MODIFIERS.length >= 29, `expected >= 29 modifiers, got ${MODIFIERS.length}`);
+  });
+
+  test('GLOBAL_APIS has exactly 9 entries', () => {
+    assert.strictEqual(GLOBAL_APIS.length, 9, `expected 9 global APIs, got ${GLOBAL_APIS.length}`);
+  });
+
+  test('all GLOBAL_APIS have name, signature, description', () => {
+    for (const api of GLOBAL_APIS) {
+      assert.ok(api.name.startsWith('Alpine.'), `API name should start with "Alpine." got: ${api.name}`);
+      assert.ok(api.signature.length > 0, `API ${api.name} has empty signature`);
+      assert.ok(api.description.length > 0, `API ${api.name} has empty description`);
+    }
+  });
+
+  test('expected global APIs present', () => {
+    const expected = ['Alpine.data', 'Alpine.store', 'Alpine.bind', 'Alpine.start', 'Alpine.plugin', 'Alpine.directive', 'Alpine.magic', 'Alpine.reactive', 'Alpine.effect'];
+    for (const name of expected) {
+      const api = GLOBAL_APIS.find((a) => a.name === name);
+      assert.ok(api, `global API ${name} not found`);
+    }
   });
 });
 
