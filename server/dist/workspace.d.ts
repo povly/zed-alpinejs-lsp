@@ -32,6 +32,7 @@ export declare class WorkspaceIndex {
     indexDocument(uri: string, text: string, precomputedAttrs?: AlpineAttr[]): void;
     removeDocument(uri: string): void;
     getText(uri: string): string | undefined;
+    allUris(): string[];
     lookup(name: string): WorkspaceDef[];
     allNames(): string[];
     allDataNames(): string[];

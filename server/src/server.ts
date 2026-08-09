@@ -13,8 +13,12 @@ import {
   InitializeParams,
   InitializeResult,
   Location,
+  ReferenceParams,
+  RenameParams,
   SymbolKind,
   TextDocumentSyncKind,
+  TextEdit,
+  WorkspaceEdit,
 } from 'vscode-languageserver/node';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -120,6 +124,8 @@ export class AlpineLanguageServer {
             workspaceDiagnostics: false,
           },
           documentLinkProvider: { resolveProvider: false },
+          referencesProvider: true,
+          renameProvider: { prepareProvider: false },
           textDocumentSync: TextDocumentSyncKind.Full,
         },
       };
@@ -133,6 +139,12 @@ export class AlpineLanguageServer {
     });
     connection.onDocumentLinks((params: DocumentLinkParams) => {
       return this.onDocumentLink(params);
+    });
+    connection.onReferences((params: ReferenceParams) => {
+      return this.onReferences(params);
+    });
+    connection.onRenameRequest((params: RenameParams) => {
+      return this.onRename(params);
     });
   }
 
@@ -644,6 +656,168 @@ export class AlpineLanguageServer {
 
     this.connection.console.info(`[documentLink] returned ${links.length} links for ${uri}`);
     return links;
+  }
+
+  private onReferences(params: ReferenceParams): Location[] {
+    const uri = params.textDocument.uri;
+    const doc = this.documents.get(uri);
+    if (!doc) return [];
+
+    const offset = doc.offsetAt(params.position);
+    const attrs = this.attrCache.get(uri) ?? [];
+    const attr = findAttrAtOffset(attrs, offset);
+    if (!attr) return [];
+
+    const locations: Location[] = [];
+
+    if (
+      isXData(attr.name) &&
+      !attr.value.trim().startsWith('{') &&
+      !attr.value.trim().startsWith('(')
+    ) {
+      const word = getWordAtOffset(attr.value, offset - attr.valueOffset);
+      if (word) {
+        for (const fileUri of this.workspace.allUris()) {
+          const text = this.workspace.getText(fileUri);
+          if (!text) continue;
+          const fileAttrs = extractAlpineAttrs(text);
+          for (const fa of fileAttrs) {
+            if (isXData(fa.name) && fa.value.trim() === word) {
+              locations.push({
+                uri: fileUri,
+                range: {
+                  start: this.offsetToPosition(fileUri, fa.valueOffset),
+                  end: this.offsetToPosition(fileUri, fa.valueOffset + fa.valueLength),
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Check if cursor is on $store.NAME chain (usage of a registered store)
+    const chain = getChainAtOffset(attr.value, offset - attr.valueOffset);
+    if (chain && chain.length >= 2 && chain[0] === '$store') {
+      const storeName = chain[1];
+      for (const fileUri of this.workspace.allUris()) {
+        const text = this.workspace.getText(fileUri);
+        if (!text) continue;
+        const chains = findAllChainsInText(text);
+        for (const c of chains) {
+          if (c.type === '$store' && c.name === storeName) {
+            locations.push({
+              uri: fileUri,
+              range: {
+                start: this.offsetToPosition(fileUri, c.offset),
+                end: this.offsetToPosition(fileUri, c.offset + `$store.${storeName}`.length),
+              },
+            });
+          }
+        }
+      }
+    }
+
+    this.connection.console.info(`[references] found ${locations.length} references`);
+    return locations;
+  }
+
+  private onRename(params: RenameParams): WorkspaceEdit | null {
+    const uri = params.textDocument.uri;
+    const doc = this.documents.get(uri);
+    if (!doc) return null;
+
+    const newName = params.newName;
+    const offset = doc.offsetAt(params.position);
+    const attrs = this.attrCache.get(uri) ?? [];
+    const attr = findAttrAtOffset(attrs, offset);
+    if (!attr) return null;
+
+    const changes: Record<string, TextEdit[]> = {};
+
+    if (
+      isXData(attr.name) &&
+      !attr.value.trim().startsWith('{') &&
+      !attr.value.trim().startsWith('(')
+    ) {
+      const word = getWordAtOffset(attr.value, offset - attr.valueOffset);
+      if (!word) return null;
+
+      for (const fileUri of this.workspace.allUris()) {
+        const text = this.workspace.getText(fileUri);
+        if (!text) continue;
+        const fileAttrs = extractAlpineAttrs(text);
+        for (const fa of fileAttrs) {
+          if (isXData(fa.name) && fa.value.trim() === word) {
+            if (!changes[fileUri]) changes[fileUri] = [];
+            changes[fileUri].push({
+              range: {
+                start: this.offsetToPosition(fileUri, fa.valueOffset),
+                end: this.offsetToPosition(fileUri, fa.valueOffset + fa.valueLength),
+              },
+              newText: newName,
+            });
+          }
+        }
+      }
+      const editCount = Object.values(changes).reduce((a, e) => a + e.length, 0);
+      this.connection.console.info(
+        `[rename] Alpine.data '${word}' → '${newName}': ${editCount} edits`,
+      );
+      return { changes };
+    }
+
+    const chain = getChainAtOffset(attr.value, offset - attr.valueOffset);
+    if (chain && chain.length >= 2 && chain[0] === '$store') {
+      const storeName = chain[1];
+      for (const fileUri of this.workspace.allUris()) {
+        const text = this.workspace.getText(fileUri);
+        if (!text) continue;
+        const chains = findAllChainsInText(text);
+        for (const c of chains) {
+          if (c.type === '$store' && c.name === storeName) {
+            if (!changes[fileUri]) changes[fileUri] = [];
+            const nameOffset = c.offset + '$store.'.length;
+            changes[fileUri].push({
+              range: {
+                start: this.offsetToPosition(fileUri, nameOffset),
+                end: this.offsetToPosition(fileUri, nameOffset + storeName.length),
+              },
+              newText: newName,
+            });
+          }
+        }
+      }
+      const editCount = Object.values(changes).reduce((a, e) => a + e.length, 0);
+      this.connection.console.info(
+        `[rename] Alpine.store '${storeName}' → '${newName}': ${editCount} edits`,
+      );
+      return { changes };
+    }
+
+    return null;
+  }
+
+  /**
+   * Open files resolve via TextDocuments.positionAt; non-open files fall back
+   * to scanning raw workspace text (only open files have a TextDocument).
+   */
+  private offsetToPosition(uri: string, offset: number): { line: number; character: number } {
+    const doc = this.documents.get(uri);
+    if (doc) return doc.positionAt(offset);
+    const text = this.workspace.getText(uri) ?? '';
+    let line = 0;
+    let char = 0;
+    const max = Math.min(offset, text.length);
+    for (let i = 0; i < max; i++) {
+      if (text[i] === '\n') {
+        line++;
+        char = 0;
+      } else {
+        char++;
+      }
+    }
+    return { line, character: char };
   }
 
   private computeDiagnostics(uri: string, doc: TextDocument): Diagnostic[] {

@@ -2747,6 +2747,115 @@ suite('Document Links', () => {
   });
 });
 
+// ── References + Rename ──
+suite('References + Rename', () => {
+  test('references for Alpine.data → finds x-data usages', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('dropdown') + 3;
+    const refs = server['onReferences']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      context: { includeDeclaration: true },
+    });
+    assert.ok(refs.length >= 1);
+    const pageRefs = refs.filter(r => r.uri === 'file:///page.html');
+    assert.ok(pageRefs.length >= 1, 'should find usage in page.html');
+  });
+
+  test('references for Alpine.store → finds $store.name usages', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js', "Alpine.store('ui', { open: false })");
+    const html = '<div x-data x-init="$store.ui.toggle()">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('$store.ui') + 7;
+    const refs = server['onReferences']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      context: { includeDeclaration: true },
+    });
+    assert.ok(refs.length >= 1);
+    const storeRefs = refs.filter(r => r.uri === 'file:///page.html');
+    assert.ok(storeRefs.length >= 1, 'should find $store.ui usage');
+  });
+
+  test('references on unregistered symbol → empty', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="nonexistent">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('nonexistent') + 3;
+    const refs = server['onReferences']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      context: { includeDeclaration: true },
+    });
+    assert.ok(refs.length === 0 || refs.every(r => r.uri !== 'file:///registered.js'));
+  });
+
+  test('rename Alpine.data → WorkspaceEdit with usages', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('dropdown') + 3;
+    const result = server['onRename']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      newName: 'menu',
+    });
+    assert.ok(result);
+    assert.ok(result.changes);
+    const pageEdits = result.changes['file:///page.html'];
+    assert.ok(pageEdits && pageEdits.length >= 1);
+    assert.ok(pageEdits.some(e => e.newText === 'menu'));
+  });
+
+  test('rename Alpine.store → WorkspaceEdit with usages', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js', "Alpine.store('ui', { sidebar: false })");
+    const html = '<div x-data x-init="$store.ui.toggle()">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('$store.ui') + 7;
+    const result = server['onRename']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      newName: 'interface',
+    });
+    assert.ok(result);
+    assert.ok(result.changes);
+    const pageEdits = result.changes['file:///page.html'];
+    assert.ok(pageEdits && pageEdits.length >= 1);
+    assert.ok(pageEdits.some(e => e.newText === 'interface'));
+  });
+
+  test('references on inline x-data → empty (no registration to search)', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const cursorOffset = html.indexOf('{ open') + 2;
+    const refs = server['onReferences']({
+      textDocument: { uri: 'file:///page.html' },
+      position: doc.positionAt(cursorOffset),
+      context: { includeDeclaration: true },
+    });
+    assert.strictEqual(refs.length, 0);
+  });
+
+  test('empty document → empty references', () => {
+    const { server } = createTestServer();
+    const html = '<div class="foo">no alpine</div>';
+    const doc = loadDocument(server, 'file:///page.html', html);
+    const refs = server['onReferences']({
+      textDocument: { uri: 'file:///page.html' },
+      position: { line: 0, character: 5 },
+      context: { includeDeclaration: true },
+    });
+    assert.strictEqual(refs.length, 0);
+  });
+});
+
 async function main() {
   if (asyncTests.length > 0) {
     await runAsync();

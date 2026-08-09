@@ -1,4 +1,4 @@
-# План: Document Links
+# План: References + Rename
 
 **Режим:** Fast  
 **Дата:** 2026-08-09  
@@ -6,7 +6,7 @@
 
 ## Original Request
 
-roadmap → Document Links
+roadmap → References + Rename
 
 ## Settings
 
@@ -16,51 +16,30 @@ roadmap → Document Links
 
 ## Roadmap Linkage
 
-- **Milestone:** "Document Links — кликабельные x-data=\"cart\" → Alpine.data('cart') регистрацию; $store.ui → Alpine.store('ui'). Надстройка над существующим onDefinition"
-- **Rationale:** onDefinition уже резолвит x-data registrations и $store chains. Document Links делает их видимыми как кликабельные ссылки без явного F12.
-
-## Анализ
-
-### Что уже есть
-
-- `workspace.lookupAlpineData(name)` / `lookupAlpineStore(name)` — регистрации
-- `defToLocation(def)` — WorkspaceDef → Location (uri + range)
-- `getChainAtOffset(text, offset)` — извлечение $store/$magic цепочки
-- `attrCache` — все атрибуты документа
-
-### Логика
-
-1. `x-data="name"` (registered) → DocumentLink с target = registration URI
-2. `$store.NAME` в любом значении атрибута → DocumentLink на store registration
-3. Inline x-data (`{...}`) → пропустить
-
----
+- **Milestone:** "References + Rename — find usages + rename для x-ref, компонентов Alpine.data(), stores Alpine.store()"
+- **Rationale:** onDefinition уже резолвит символы. fileTexts хранит все тексты. References находит usages, Rename производит WorkspaceEdit.
 
 ## Tasks
 
-### Task 1-3: capability + handler + helper
+### Task 1: capabilities + импорты
+server.ts: referencesProvider, renameProvider, ReferenceParams/RenameParams/TextEdit/WorkspaceEdit импорт
 
-**Файл:** `server/src/server.ts`
+### Task 2: allUris() в workspace.ts
+Public method returning [...this.fileTexts.keys()]
 
-1. Импорты: `DocumentLink`, `DocumentLinkParams` из vscode-languageserver/node
-2. Capability: `documentLinkProvider: { resolveProvider: false }`
-3. Handler: `connection.onDocumentLink(...)` в конструкторе
-4. `onDocumentLink(params)` метод:
-   - Для каждого attr: если x-data="name" registered → link
-   - Для каждого $store.NAME / $magic() в attr.value → link
-   - Использовать `defToLocation` для target URI + range
-5. Helper `findAllChainsInText(text)` — regex-сканер для $store.NAME и $magic() вхождений
+### Task 3: onReferences handler
+- Регистрация connection.onReferences
+- Для Alpine.data(name): search all fileTexts for x-data="name" attrs → Location[]
+- Для Alpine.store(name): search all fileTexts for $store.name chains → Location[]
 
-### Task 4: Тесты
+### Task 4: onRename handler  
+- Регистрация connection.onRenameRequest
+- Collect registration + usage locations
+- WorkspaceEdit { changes: Map<uri, TextEdit[]> }
 
-**Файл:** `test/test.js`
+### Task 5: Тесты (7 тестов)
 
-6 тестов: registered x-data → link, inline → no link, unregistered → no link, $store → link, multiple $store → multiple links, empty → 0 links
-
-### Task 5: Сборка
-
-- `npm run build` + `node test/test.js` — 0 errors, 0 failed
+### Task 6: Сборка + проверка
 
 ## Commit Plan
-
-1 коммит: `feat: add documentLinkProvider for x-data and $store references`
+1 коммит: `feat: add references and rename providers for Alpine.data/store`

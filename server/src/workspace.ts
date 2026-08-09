@@ -81,6 +81,10 @@ export class WorkspaceIndex {
     return this.fileTexts.get(uri);
   }
 
+  allUris(): string[] {
+    return [...this.fileTexts.keys()];
+  }
+
   lookup(name: string): WorkspaceDef[] {
     return this.nameIndex.get(name) ?? [];
   }

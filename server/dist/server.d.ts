@@ -12,6 +12,13 @@ export declare class AlpineLanguageServer {
     private onDefinition;
     private onDocumentSymbol;
     private onDocumentLink;
+    private onReferences;
+    private onRename;
+    /**
+     * Open files resolve via TextDocuments.positionAt; non-open files fall back
+     * to scanning raw workspace text (only open files have a TextDocument).
+     */
+    private offsetToPosition;
     private computeDiagnostics;
     private getScopeMembers;
     private getXDataScope;
