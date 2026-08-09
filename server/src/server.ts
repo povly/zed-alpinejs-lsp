@@ -5,6 +5,8 @@ import {
   Connection,
   Diagnostic,
   DiagnosticSeverity,
+  DocumentLink,
+  DocumentLinkParams,
   DocumentSymbol,
   DocumentSymbolParams,
   Hover,
@@ -117,6 +119,7 @@ export class AlpineLanguageServer {
             interFileDependencies: false,
             workspaceDiagnostics: false,
           },
+          documentLinkProvider: { resolveProvider: false },
           textDocumentSync: TextDocumentSyncKind.Full,
         },
       };
@@ -127,6 +130,9 @@ export class AlpineLanguageServer {
     connection.onDefinition((p) => this.onDefinition(p));
     connection.onDocumentSymbol((params: DocumentSymbolParams) => {
       return this.onDocumentSymbol(params);
+    });
+    connection.onDocumentLinks((params: DocumentLinkParams) => {
+      return this.onDocumentLink(params);
     });
   }
 
@@ -565,6 +571,81 @@ export class AlpineLanguageServer {
     return symbols;
   }
 
+  private onDocumentLink(params: DocumentLinkParams): DocumentLink[] {
+    const uri = params.textDocument.uri;
+    const doc = this.documents.get(uri);
+    if (!doc) return [];
+
+    const attrs = this.attrCache.get(uri) ?? [];
+    const links: DocumentLink[] = [];
+
+    for (const attr of attrs) {
+      // 1. x-data="name" (registered component) → link to registration
+      if (isXData(attr.name)) {
+        const value = attr.value.trim();
+        if (value && !value.startsWith('{') && !value.startsWith('(')) {
+          const dataRegs = this.workspace.lookupAlpineData(value);
+          if (dataRegs.length > 0) {
+            const loc = this.defToLocation(dataRegs[0].def);
+            if (loc) {
+              const nameOffset = attr.valueOffset;
+              links.push({
+                range: {
+                  start: doc.positionAt(nameOffset),
+                  end: doc.positionAt(nameOffset + attr.valueLength),
+                },
+                target: loc.uri,
+                tooltip: `Alpine.data('${value}')`,
+              });
+            }
+          }
+        }
+      }
+
+      // 2. $store.NAME and $magic() chains in any attribute value
+      const chains = findAllChainsInText(attr.value);
+      for (const c of chains) {
+        const chainOffset = attr.valueOffset + c.offset;
+        if (c.type === '$store') {
+          const storeRegs = this.workspace.lookupAlpineStore(c.name);
+          if (storeRegs.length > 0) {
+            const loc = this.defToLocation(storeRegs[0].def);
+            if (loc) {
+              const chainLen = `$store.${c.name}`.length;
+              links.push({
+                range: {
+                  start: doc.positionAt(chainOffset),
+                  end: doc.positionAt(chainOffset + chainLen),
+                },
+                target: loc.uri,
+                tooltip: `Alpine.store('${c.name}')`,
+              });
+            }
+          }
+        } else if (c.type === '$magic') {
+          const magicRegs = this.workspace.lookupAlpineMagic(c.name);
+          if (magicRegs.length > 0) {
+            const loc = this.defToLocation(magicRegs[0].def);
+            if (loc) {
+              const chainLen = `$${c.name}`.length;
+              links.push({
+                range: {
+                  start: doc.positionAt(chainOffset),
+                  end: doc.positionAt(chainOffset + chainLen),
+                },
+                target: loc.uri,
+                tooltip: `Alpine.magic('${c.name}')`,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    this.connection.console.info(`[documentLink] returned ${links.length} links for ${uri}`);
+    return links;
+  }
+
   private computeDiagnostics(uri: string, doc: TextDocument): Diagnostic[] {
     const attrs = this.attrCache.get(uri) ?? [];
     const text = doc.getText();
@@ -887,4 +968,21 @@ function findEnclosingTag(text: string, offset: number): { tagName: string; tagS
     i--;
   }
   return null;
+}
+
+function findAllChainsInText(text: string): { type: string; name: string; offset: number }[] {
+  const results: { type: string; name: string; offset: number }[] = [];
+  const storeRegex = /\$store\.(\w+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = storeRegex.exec(text)) !== null) {
+    results.push({ type: '$store', name: m[1], offset: m.index });
+  }
+  const magicRegex = /\$(\w+)\s*\(/g;
+  while ((m = magicRegex.exec(text)) !== null) {
+    const magicName = m[1];
+    if (magicName !== 'store') {
+      results.push({ type: '$magic', name: magicName, offset: m.index });
+    }
+  }
+  return results;
 }

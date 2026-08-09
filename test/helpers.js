@@ -44,6 +44,7 @@ function createTestServer() {
     onHover: (fn) => { handlers.onHover = fn; return disposable(); },
     onDefinition: (fn) => { handlers.onDefinition = fn; return disposable(); },
     onDocumentSymbol: (fn) => { handlers.onDocumentSymbol = fn; return disposable(); },
+    onDocumentLinks: (fn) => { handlers.onDocumentLinks = fn; return disposable(); },
     // Outbound notifications — no-op stubs (server sends diagnostics on change/close)
     sendDiagnostics: () => {},
     // TextDocuments.listen() registers these document lifecycle hooks

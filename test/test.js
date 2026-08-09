@@ -2675,6 +2675,78 @@ suite('Diagnostics', () => {
   });
 });
 
+// ── onDocumentLink ──
+suite('Document Links', () => {
+  test('x-data registered → link to registration file', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///comp.js', "Alpine.data('dropdown', () => ({ open: false }))");
+    const html = '<div x-data="dropdown">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(links.length, 1);
+    assert.ok(links[0].target);
+    assert.ok(links[0].tooltip.includes('dropdown'));
+    assert.ok(links[0].range);
+  });
+
+  test('x-data inline → no link', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="{ open: false }">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(links.length, 0);
+  });
+
+  test('x-data unregistered → no link', () => {
+    const { server } = createTestServer();
+    const html = '<div x-data="nonexistent">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(links.length, 0);
+  });
+
+  test('$store.NAME → link to store registration', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js', "Alpine.store('ui', { open: false })");
+    const html = '<div x-data x-init="$store.ui.toggle()">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    const storeLinks = links.filter(l => l.tooltip && l.tooltip.includes('Alpine.store'));
+    assert.strictEqual(storeLinks.length, 1);
+    assert.ok(storeLinks[0].tooltip.includes('ui'));
+  });
+
+  test('multiple $store references → multiple links', () => {
+    const { server } = createTestServer();
+    loadDocument(server, 'file:///store.js', "Alpine.store('ui', { open: false }); Alpine.store('cart', { count: 0 })");
+    const html = '<div x-data x-init="$store.ui.open && $store.cart.add()">';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    const storeLinks = links.filter(l => l.tooltip && l.tooltip.includes('Alpine.store'));
+    assert.strictEqual(storeLinks.length, 2);
+  });
+
+  test('empty document → no links', () => {
+    const { server } = createTestServer();
+    const html = '<div class="foo">no alpine here</div>';
+    const doc = loadDocument(server, 'file:///test.html', html);
+    const links = server['onDocumentLink']({
+      textDocument: { uri: 'file:///test.html' },
+    });
+    assert.strictEqual(links.length, 0);
+  });
+});
+
 async function main() {
   if (asyncTests.length > 0) {
     await runAsync();
