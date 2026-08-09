@@ -22,3 +22,10 @@ export interface ModifierInfo {
     documentation: string;
 }
 export declare const MODIFIERS: ModifierInfo[];
+export interface GlobalApi {
+    name: string;
+    signature: string;
+    description: string;
+    example?: string;
+}
+export declare const GLOBAL_APIS: GlobalApi[];

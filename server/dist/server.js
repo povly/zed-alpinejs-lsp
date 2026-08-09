@@ -123,6 +123,16 @@ class AlpineLanguageServer {
         const items = [];
         const localMembers = this.getScopeMembers(textDocument.uri, attr);
         const localNames = new Set(localMembers.map((m) => m.name));
+        // Global API completions when typing "Alpine." or "Alpine"
+        if (textBefore === 'Alpine' || /Alpine\.\w*$/.test(textBefore)) {
+            this.connection.console.info('[completion] global APIs suggested');
+            return data_1.GLOBAL_APIS.map((api) => ({
+                label: api.name,
+                kind: node_1.CompletionItemKind.Function,
+                detail: api.signature,
+                documentation: api.description,
+            }));
+        }
         if (/\$\w*$/.test(textBefore)) {
             const typed = textBefore.match(/\$(\w*)$/)?.[1] ?? '';
             for (const prop of data_1.MAGIC_PROPERTIES) {
@@ -259,6 +269,20 @@ class AlpineLanguageServer {
         const attr = (0, extractor_1.findAttrAtOffset)(attrs, offset);
         if (!attr)
             return null;
+        // Check for Alpine.* global API (e.g. Alpine.data, Alpine.store)
+        const alpineApiName = getAlpineApiAtOffset(attr.value, offset - attr.valueOffset);
+        if (alpineApiName) {
+            const api = data_1.GLOBAL_APIS.find((a) => a.name === `Alpine.${alpineApiName}`);
+            if (api) {
+                this.connection.console.info('[hover] global API: ' + api.name);
+                return {
+                    contents: [
+                        { language: 'typescript', value: api.signature },
+                        api.description,
+                    ],
+                };
+            }
+        }
         const word = getWordAtOffset(attr.value, offset - attr.valueOffset);
         if (!word)
             return null;
@@ -549,6 +573,39 @@ function getWordAtOffset(text, offset) {
         end++;
     const word = text.slice(start, end);
     return word || null;
+}
+/**
+ * Detect an `Alpine.NAME` reference at `offset` and return the NAME segment.
+ * Handles cursor positioned on either segment ("Alpine" or "NAME").
+ *
+ *   "Alpine.data('x')" @ "data"   → "data"
+ *   "Alpine.start()"   @ "Alpine" → "start"  (only when ".NAME" follows)
+ *   "toggle()"         @ "toggle" → null     (not Alpine-prefixed)
+ */
+function getAlpineApiAtOffset(text, offset) {
+    if (offset < 0 || offset > text.length)
+        return null;
+    let start = offset;
+    while (start > 0 && /\w/.test(text[start - 1]))
+        start--;
+    let end = offset;
+    while (end < text.length && /\w/.test(text[end]))
+        end++;
+    if (end <= start)
+        return null;
+    const segment = text.slice(start, end);
+    if (start >= 7 && text.slice(start - 7, start) === 'Alpine.') {
+        return segment;
+    }
+    if (segment === 'Alpine' && text[end] === '.') {
+        let nameEnd = end + 1;
+        while (nameEnd < text.length && /\w/.test(text[nameEnd]))
+            nameEnd++;
+        const name = text.slice(end + 1, nameEnd);
+        if (name)
+            return name;
+    }
+    return null;
 }
 /**
  * Walk backward from `offset` through dot-separated word segments.

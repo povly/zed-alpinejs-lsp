@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MODIFIERS = exports.TRANSITION_SUBS = exports.DIRECTIVES = exports.MAGIC_PROPERTIES = void 0;
+exports.GLOBAL_APIS = exports.MODIFIERS = exports.TRANSITION_SUBS = exports.DIRECTIVES = exports.MAGIC_PROPERTIES = void 0;
 exports.MAGIC_PROPERTIES = [
     {
         name: '$el',
@@ -103,5 +103,71 @@ exports.MODIFIERS = [
     { name: '.fill', for: ['x-model'], documentation: "Populate empty bound property from element's value attribute." },
     { name: '.important', for: ['x-show'], documentation: 'Set display:none !important instead of display:none.' },
     { name: '.immediate', for: ['x-show'], documentation: 'Show/hide immediately without transition animation.' },
+    { name: '.dot', for: ['x-on'], documentation: 'Converts dashes to dots in the event name. Useful for listening to custom events with dotted names.' },
+    { name: '.passive.false', for: ['x-on'], documentation: 'By default, Alpine marks touch/wheel events as passive for better scroll performance. Use .passive.false to make them cancelable via preventDefault().' },
+    { name: '.change', for: ['x-model'], documentation: 'Syncs the model value on the native \'change\' event instead of \'input\'. Functionally equivalent to .lazy.' },
+    { name: '.blur', for: ['x-model'], documentation: 'Syncs the model value when the input element loses focus (on blur event).' },
+    { name: '.enter', for: ['x-model'], documentation: 'Syncs the model value when the user presses the Enter key.' },
+    { name: '.duration', for: ['x-transition'], documentation: 'Customizes the transition duration in milliseconds. Append the value after the modifier: .duration.500ms.' },
+    { name: '.delay', for: ['x-transition'], documentation: 'Delays the start of the transition by the specified milliseconds: .delay.50ms.' },
+    { name: '.opacity', for: ['x-transition'], documentation: 'Restricts the transition to only animate opacity (no scale transform).' },
+    { name: '.scale', for: ['x-transition'], documentation: 'Restricts the transition to only animate scale (no opacity). Append a scale value: .scale.80 for 80% scale.' },
+    { name: '.origin', for: ['x-transition'], documentation: 'Sets the transform origin for scale transitions. Combinable: .origin.top.right.' },
+];
+exports.GLOBAL_APIS = [
+    {
+        name: 'Alpine.data',
+        signature: 'Alpine.data(name, callback)',
+        description: 'Registers a reusable Alpine component factory. The callback receives an initialization function that returns an object with data, methods, and computed properties.',
+        example: "Alpine.data('dropdown', () => ({ open: false, toggle() { this.open = !this.open } }))",
+    },
+    {
+        name: 'Alpine.store',
+        signature: 'Alpine.store(name, value)',
+        description: 'Registers a global reactive store accessible via $store magic. The store object becomes reactive and shared across all Alpine components.',
+        example: "Alpine.store('darkMode', { enabled: false, toggle() { this.enabled = !this.enabled } })",
+    },
+    {
+        name: 'Alpine.bind',
+        signature: 'Alpine.bind(callback)',
+        description: 'Registers a reusable x-bind object that can be referenced by name in x-bind directives. Useful for sharing complex binding logic.',
+        example: "Alpine.bind('inputStyles', () => ({ class: 'border-gray-300', '@focus': 'focused = true' }))",
+    },
+    {
+        name: 'Alpine.start',
+        signature: 'Alpine.start()',
+        description: "Manually starts Alpine's initialization process. Useful when Alpine is loaded as an NPM module and you need to control when Alpine begins scanning the DOM.",
+        example: "import Alpine from 'alpinejs'; window.Alpine = Alpine; Alpine.start();",
+    },
+    {
+        name: 'Alpine.plugin',
+        signature: 'Alpine.plugin(callback)',
+        description: 'Registers an Alpine plugin. The callback receives the Alpine instance, allowing the plugin to register directives, magics, or other functionality.',
+        example: "import focus from '@alpinejs/focus'; Alpine.plugin(focus);",
+    },
+    {
+        name: 'Alpine.directive',
+        signature: 'Alpine.directive(name, callback)',
+        description: 'Registers a custom directive. The callback receives (el, { value, modifiers, expression, cleanup }) where el is the DOM element and the second arg contains directive metadata.',
+        example: "Alpine.directive('intersection', (el, { expression }) => { /* custom logic */ })",
+    },
+    {
+        name: 'Alpine.magic',
+        signature: 'Alpine.magic(name, callback)',
+        description: 'Registers a custom magic property accessible via $ prefix in Alpine expressions. The callback receives the Alpine element scope.',
+        example: "Alpine.magic('clipboard', () => navigator.clipboard); // $clipboard",
+    },
+    {
+        name: 'Alpine.reactive',
+        signature: 'Alpine.reactive(object)',
+        description: "Creates a deeply reactive proxy of the given object. Changes to the object's properties (including nested ones) are tracked by Alpine's reactivity system. Returns the reactive proxy.",
+        example: "let state = Alpine.reactive({ count: 0 }); state.count++; // triggers effects",
+    },
+    {
+        name: 'Alpine.effect',
+        signature: 'Alpine.effect(callback)',
+        description: 'Registers a reactive effect that automatically re-runs whenever any reactive data accessed inside the callback changes. Returns a cleanup function to stop tracking.',
+        example: "Alpine.effect(() => { console.log('Count is:', state.count) });",
+    },
 ];
 //# sourceMappingURL=data.js.map
